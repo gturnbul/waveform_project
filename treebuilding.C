@@ -1,8 +1,35 @@
+#include "TStyle.h"
+#include "TMath.h"
+#include "TCanvas.h"
+#include "TPaveText.h"
 #include <iostream>
+#include <memory>
+#define _USE_MATH_DEFINES
+#include <fstream>
+#include <sstream>
 #include <vector>
-#include <TFile.h>
-#include <TTree.h>
-#include <TH2F.h>
+#include <TH1D.h>
+#include <TH2D.h>
+#include <TH3D.h>
+#include <TF1.h>
+#include <TStyle.h>
+#include "TKey.h"
+#include "TFile.h"
+#include "TTree.h"
+#include "TLine.h"
+#include "TROOT.h"
+#include <TText.h>
+#include <TLatex.h>
+#include <TRandom3.h>
+#include <TLegend.h>
+#include <TSystem.h>
+#include <TGraph.h>
+#include <TGraphErrors.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <TParameter.h>
+#include <TPaletteAxis.h>
+#include <TArrayF.h>
 
 using namespace std;
 
@@ -138,17 +165,67 @@ void treebuilding(){
     // Set waveform length
     int ticks = 1024;
     
-    // Define histograms for electrons and gammas with Event number on the x-axis and Waveform index on the y-axis
-    TH2F *hist_electron = new TH2F("hist_electron", "Electron: Event vs Waveform",nEntries, 0, nEntries, ticks, 0, ticks);
-    TH2F *hist_gamma = new TH2F("hist_gamma", "Gamma: Event vs Waveform",nEntries, 0, nEntries, ticks, 0, ticks);
 
     for (Long64_t j = 0; j < nEntries; j++) {
         tree->GetEntry(j);
-
+        double e_std_dev = 0;
         // Loop over elements in the `electron` vector for the current event
         for (size_t i = 0; i < electron->size(); i++) {
             if (electron->at(i) == 1) { // Electron histogram
 
+                // Calculate the baseline and standard deviation of the waveform
+                for (int k = 0; k < 96; k++) {
+                    e_baseline += wave->at(i).at(k);
+                }
+                e_baseline = e_baseline / 96;
+
+                double e_sum_sq_diff = 0;
+                for (int k = 0; k < 96; k++) {
+                    e_sum_sq_diff += pow(wave->at(i).at(k) - e_baseline, 2);
+                }
+                double e_std_dev = sqrt(e_sum_sq_diff / 96);
+
+                // Find the minimum value of the waveform
+
+                e_wave_peak_value = wave->at(i).at(0);  // Initialize with the first value of the waveform
+                e_wave_peak_time = 0;  // Initialize with the first time bin (0-based)
+
+                for (int k = 1; k < wave->at(i).size(); k++) {  // Start from 1 because we already initialized with the first value
+                    double current_value = wave->at(i).at(k);
+
+                    // If the current value is smaller than the current minimum, update the minimum
+                    if (current_value < e_wave_peak_value) {
+                        e_wave_peak_value = current_value;
+                        e_wave_peak_time = k;  // Store the bin index of the minimum value
+                    }
+                } 
+                // Calculate the amplitude of the waveform
+                e_calc_amplitude = e_wave_peak_value - e_baseline;  
+
+                // Declare the 1D histogram to hold the waveform data
+                TH1D *e_h_wave = new TH1D(Form("e_h_wave_%d", j), Form("e_h_wave_%d", j), wave->at(i).size(), 0, wave->at(i).size());
+                for (int k=1; k < wave->at(i).size(); k++) {
+                    e_h_wave->SetBinContent(k, wave->at(i).at(k-1));
+                    e_h_wave->SetBinError(k, e_std_dev);
+                }
+
+                // Declare the fit function for the waveform
+                TF1* e_fitFunc = new TF1("e_fitFunc", "(1/(1-exp(-[4]*(x-[1]))))*[0]*(exp(-(x-[1])/[2]) - exp(-(x-[1])/[3])) + [5]", 200, 900);
+                e_fitFunc->SetParameters(e_calc_amplitude, 266, 18, 10, 5, e_baseline);
+
+                // Perform fit
+                e_h_wave->Fit("e_fitFunc", "RQ"); //fit the range, quietly
+
+                // Get the fit parameters
+                e_chi2 = e_fitFunc->GetChisquare();
+                e_ndf = e_fitFunc->GetNDF();
+                e_chi2ndf = e_chi2 / e_ndf;
+                e_fit_a_factor = e_fitFunc->GetParameter(0);
+                e_fit_pulse_onset = e_fitFunc->GetParameter(1);
+                e_fit_r_factor = e_fitFunc->GetParameter(2);
+                e_fit_d_factor = e_fitFunc->GetParameter(3);
+
+                // Get the other parameters of the waveform from the original file
                 e_event = j;
                 e_om_number = om_number->at(i);
                 e_energy = energy->at(i);
@@ -157,12 +234,40 @@ void treebuilding(){
                 // Fill the tree with the data
                 newTree->Fill();
 
+                // Delete the histogram to avoid memory leak
+                delete e_h_wave;
+            
+
                 // Reset the variables for the next loop iteration
                 e_event = -1;
             
 
+
             } 
             else if (electron->at(i) == 0) { // Gamma histogram
+
+                // Process and fill histogram for electron
+                for (int k = 0; k < 96; k++) {
+                    g_baseline += wave->at(i).at(k);
+                }
+                g_baseline = g_baseline / 96;
+
+                double g_sum_sq_diff = 0;
+                for (int k = 0; k < 96; k++) {
+                    g_sum_sq_diff += pow(wave->at(i).at(k) - g_baseline, 2);
+                }
+                double g_std_dev = sqrt(g_sum_sq_diff / 96);
+                
+                // // Fill the histogram with the waveform data
+                // for (int k = 0; k < wave->at(i).size(); k++) {
+                //     hist_electron->Fill(j, k, wave->at(i).at(k));
+                //     hist_electron->SetBinError(j, k, g_std_dev);
+                // }
+
+
+
+
+
 
                 g_event = j;
                 g_om_number = om_number->at(i);
