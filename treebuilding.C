@@ -174,19 +174,19 @@ void treebuilding(){
             if (electron->at(i) == 1) { // Electron histogram
 
                 // Calculate the baseline and standard deviation of the waveform
-                for (int k = 0; k < 96; k++) {
+                for (int k = 0; k < 95; k++) {
                     e_baseline += wave->at(i).at(k);
                 }
                 e_baseline = e_baseline / 96;
 
                 double e_sum_sq_diff = 0;
-                for (int k = 0; k < 96; k++) {
+                for (int k = 0; k < 95; k++) {
                     e_sum_sq_diff += pow(wave->at(i).at(k) - e_baseline, 2);
                 }
-                double e_std_dev = sqrt(e_sum_sq_diff / 96);
+
+                double e_std_dev = sqrt(e_sum_sq_diff / 95);
 
                 // Find the minimum value of the waveform
-
                 e_wave_peak_value = wave->at(i).at(0);  // Initialize with the first value of the waveform
                 e_wave_peak_time = 0;  // Initialize with the first time bin (0-based)
 
@@ -199,6 +199,7 @@ void treebuilding(){
                         e_wave_peak_time = k;  // Store the bin index of the minimum value
                     }
                 } 
+
                 // Calculate the amplitude of the waveform
                 e_calc_amplitude = e_wave_peak_value - e_baseline;  
 
@@ -209,9 +210,9 @@ void treebuilding(){
                     e_h_wave->SetBinError(k, e_std_dev);
                 }
 
-                // Declare the fit function for the waveform
-                TF1* e_fitFunc = new TF1("e_fitFunc", "(1/(1-exp(-[4]*(x-[1]))))*[0]*(exp(-(x-[1])/[2]) - exp(-(x-[1])/[3])) + [5]", 200, 900);
-                e_fitFunc->SetParameters(e_calc_amplitude, 266, 18, 10, 5, e_baseline);
+                // Declare the fit function for the waveform, embedding e_baseline as a constant value
+                TF1* e_fitFunc = new TF1("e_fitFunc", Form("(1/(1-exp(-[4]*(x-[1]))))*[0]*(exp(-(x-[1])/[2]) - exp(-(x-[1])/[3])) + %f", e_baseline), 200, 900);
+                e_fitFunc->SetParameters(e_calc_amplitude, 266, 18, 10, 5);
 
                 // Perform fit
                 e_h_wave->Fit("e_fitFunc", "RQ"); //fit the range, quietly
@@ -234,8 +235,8 @@ void treebuilding(){
                 // Fill the tree with the data
                 newTree->Fill();
 
-                // Delete the histogram to avoid memory leak
-                delete e_h_wave;
+                // Clean up
+                delete e_h_wave;  // Prevent memory leaks by deleting the histogram after saving
             
 
                 // Reset the variables for the next loop iteration
@@ -246,28 +247,60 @@ void treebuilding(){
             } 
             else if (electron->at(i) == 0) { // Gamma histogram
 
-                // Process and fill histogram for electron
-                for (int k = 0; k < 96; k++) {
+                // Calculate the baseline and standard deviation of the waveform
+                for (int k = 0; k < 95; k++) {
                     g_baseline += wave->at(i).at(k);
                 }
                 g_baseline = g_baseline / 96;
 
                 double g_sum_sq_diff = 0;
-                for (int k = 0; k < 96; k++) {
+                for (int k = 0; k < 95; k++) {
                     g_sum_sq_diff += pow(wave->at(i).at(k) - g_baseline, 2);
                 }
-                double g_std_dev = sqrt(g_sum_sq_diff / 96);
+
+                double g_std_dev = sqrt(g_sum_sq_diff / 95);
+
+                // Find the minimum value of the waveform
+                g_wave_peak_value = wave->at(i).at(0);  // Initialize with the first value of the waveform
+                g_wave_peak_time = 0;  // Initialize with the first time bin (0-based)
+
+                for (int k = 1; k < wave->at(i).size(); k++) {  // Start from 1 because we already initialized with the first value
+                    double current_value = wave->at(i).at(k);
+
+                    // If the current value is smaller than the current minimum, update the minimum
+                    if (current_value < g_wave_peak_value) {
+                        g_wave_peak_value = current_value;
+                        g_wave_peak_time = k;  // Store the bin index of the minimum value
+                    }
+                } 
+
+                // Calculate the amplitude of the waveform
+                g_calc_amplitude = g_wave_peak_value - g_baseline;  
+
+                // Declare the 1D histogram to hold the waveform data
+                TH1D *g_h_wave = new TH1D(Form("g_h_wave_%d", j), Form("g_h_wave_%d", j), wave->at(i).size(), 0, wave->at(i).size());
+                for (int k=1; k < wave->at(i).size(); k++) {
+                    g_h_wave->SetBinContent(k, wave->at(i).at(k-1));
+                    g_h_wave->SetBinError(k, g_std_dev);
+                }
+
+                // Declare the fit function for the waveform, embedding g_baseline as a constant value
+                TF1* g_fitFunc = new TF1("g_fitFunc", Form("(1/(1-exp(-[4]*(x-[1]))))*[0]*(exp(-(x-[1])/[2]) - exp(-(x-[1])/[3])) + %f", g_baseline), 200, 900);
+                g_fitFunc->SetParameters(g_calc_amplitude, 266, 18, 10, 5);
+
+                // Perform fit
+                g_h_wave->Fit("g_fitFunc", "RQ"); //fit the range, quietly
+
+                // Get the fit parameters
+                g_chi2 = g_fitFunc->GetChisquare();
+                g_ndf = g_fitFunc->GetNDF();
+                g_chi2ndf = g_chi2 / g_ndf;
+                g_fit_a_factor = g_fitFunc->GetParameter(0);
+                g_fit_pulse_onset = g_fitFunc->GetParameter(1);
+                g_fit_r_factor = g_fitFunc->GetParameter(2);
+                g_fit_d_factor = g_fitFunc->GetParameter(3);
                 
-                // // Fill the histogram with the waveform data
-                // for (int k = 0; k < wave->at(i).size(); k++) {
-                //     hist_electron->Fill(j, k, wave->at(i).at(k));
-                //     hist_electron->SetBinError(j, k, g_std_dev);
-                // }
-
-
-
-
-
+                // Get the other parameters of the waveform from the original file
 
                 g_event = j;
                 g_om_number = om_number->at(i);
@@ -277,6 +310,9 @@ void treebuilding(){
                 // Fill the tree with the data
                 newTree->Fill();
 
+                // Clean up
+                delete g_h_wave;  // Prevent memory leaks by deleting the histogram after saving
+                
                 // Reset the variables for the next loop iteration
                 g_event = -1;
               
