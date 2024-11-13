@@ -1,6 +1,8 @@
 #include <vector>
 #include <string>
 #include <iostream>
+#include <TFile.h>
+#include <TTree.h>
 
 void prefixtest() {
     // Vector where true represents "e_" prefix and false represents "g_" prefix
@@ -12,47 +14,62 @@ void prefixtest() {
     std::vector<int> om_number = {101, 102};    // e_ and g_ respectively
     std::vector<int> event = {201, 202};        // e_ and g_ respectively
 
-    // Vectors to store the formatted output strings
-    std::vector<std::string> electron_vars;
-    std::vector<std::string> gamma_vars;
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+    ////       Create a new ROOT file to store the new tree and new tree        ////////////////////
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+    TFile *file = new TFile("prefixtest.root", "RECREATE");
 
+    // Create a TTree to store the data
+    TTree *tree = new TTree("data", "Data with electron and gamma variables");
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+    ////       Set variables to hold the new branches of the new tree           ////////////////////
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+    double energy_val;
+    double charge_val;
+    int om_number_val;
+    int event_val;
+    std::string prefix;
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+    ////       Set the branch addresses                                         ////////////////////
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+    tree->Branch("prefix", &prefix);
+    tree->Branch("energy", &energy_val);
+    tree->Branch("charge", &charge_val);
+    tree->Branch("om_number", &om_number_val);
+    tree->Branch("event", &event_val);
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+    ////       Fill the tree with data                                          ////////////////////
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+   
+    // Loop over the data and fill the tree
     for (int i = 0; i < electron_indicator.size(); i++) {
         // Determine the prefix based on the value in electron_indicator
-        std::string prefix = electron_indicator[i] ? "e_" : "g_";
+        prefix = electron_indicator[i] ? "e_" : "g_";
 
-        // Format each variable with its corresponding value
-        std::string energy_str = prefix + "energy: " + std::to_string(energy[i]);
-        std::string charge_str = prefix + "charge: " + std::to_string(charge[i]);
-        std::string om_number_str = prefix + "om_number: " + std::to_string(om_number[i]);
-        std::string event_str = prefix + "event: " + std::to_string(event[i]);
+        // Get corresponding values
+        energy_val = energy[i];
+        charge_val = charge[i];
+        om_number_val = om_number[i];
+        event_val = event[i];
 
-        // Store each formatted string in the appropriate vector
-        if (electron_indicator[i]) {
-            electron_vars.push_back(energy_str);
-            electron_vars.push_back(charge_str);
-            electron_vars.push_back(om_number_str);
-            electron_vars.push_back(event_str);
-        } else {
-            gamma_vars.push_back(energy_str);
-            gamma_vars.push_back(charge_str);
-            gamma_vars.push_back(om_number_str);
-            gamma_vars.push_back(event_str);
-        }
+        // Fill the tree with the data
+        tree->Fill();
     }
 
-    // Print the electron-prefixed data
-    std::cout << "Electron Variables (e_):" << std::endl;
-    for (const auto& var : electron_vars) {
-        std::cout << var << std::endl;
-    }
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+    ////       Write the tree to the file                                       ////////////////////
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+    tree->Write();
 
-    // Print the gamma-state-prefixed data
-    std::cout << "\ngamma State Variables (g_):" << std::endl;
-    for (const auto& var : gamma_vars) {
-        std::cout << var << std::endl;
-    }
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+    ////       Close the file to save everything                                ////////////////////
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+    file->Close();
 }
-
+============================ included for later, but not needed now =============================
 // Main function to run the test
 int main() {
     prefixtest();
