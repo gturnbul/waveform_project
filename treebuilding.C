@@ -79,7 +79,7 @@ void treebuilding(){
     ////////////////////////////////////////////////////////////////////////////////////////////////
 
     // Create a new ROOT file to store the new tree
-    TFile *newFile = new TFile("treebuild.root", "RECREATE");    
+    TFile *newFile = new TFile("treebuild_v3.root", "RECREATE");    
     // create new tree
     TTree *newTree = new TTree("treebuild", "treebuild");
 
@@ -87,6 +87,7 @@ void treebuilding(){
     // Step 4: Set variables to hold the new branches of the new tree           ////////////////////
     ////////////////////////////////////////////////////////////////////////////////////////////////
 
+    //electron parameters
     int e_event = -1;
     int e_om_number = 0;
     double e_energy = 0;
@@ -95,6 +96,9 @@ void treebuilding(){
     double e_wave_peak_value = 0;
     int e_wave_peak_time = 0;
     double e_calc_amplitude = 0;
+    double e_pulse_onset = 0;
+    
+    // Fit parameters
     double e_chi2 = 0;
     double e_ndf = 0;
     double e_chi2ndf = 0;
@@ -102,7 +106,17 @@ void treebuilding(){
     double e_fit_pulse_onset = 0;
     double e_fit_r_factor = 0;
     double e_fit_d_factor = 0;
+    
+    // second fit parameters
+    double e_chi2_set = 0;
+    double e_ndf_set = 0;
+    double e_chi2ndf_set = 0;
+    double e_fit_a_factor_set = 0;
+    double e_fit_pulse_onset_set = 0;
+    double e_fit_r_factor_set = 0;
+    double e_fit_d_factor_set = 0;
 
+    //gamma parameters
     int g_event = -1;
     int g_om_number = 0;
     double g_energy = 0;
@@ -111,6 +125,9 @@ void treebuilding(){
     double g_wave_peak_value = 0;
     int g_wave_peak_time = 0;
     double g_calc_amplitude = 0;
+    double g_pulse_onset = 0;
+
+    // Fit parameters
     double g_chi2 = 0;
     double g_ndf = 0;
     double g_chi2ndf = 0;
@@ -118,6 +135,15 @@ void treebuilding(){
     double g_fit_pulse_onset = 0;
     double g_fit_r_factor = 0;
     double g_fit_d_factor = 0;
+
+    // Second fit parameters
+    double g_chi2_set = 0;
+    double g_ndf_set = 0;
+    double g_chi2ndf_set = 0;
+    double g_fit_a_factor_set = 0;
+    double g_fit_pulse_onset_set = 0;
+    double g_fit_r_factor_set = 0;
+    double g_fit_d_factor_set = 0;
 
     ////////////////////////////////////////////////////////////////////////////////////////////////
     // Step 5: Set the branch addresses                                         ////////////////////
@@ -131,6 +157,8 @@ void treebuilding(){
     newTree->Branch("e_wave_peak_value", &e_wave_peak_value);
     newTree->Branch("e_wave_peak_time", &e_wave_peak_time);
     newTree->Branch("e_calc_amplitude", &e_calc_amplitude);
+    newTree->Branch("e_pulse_onset", &e_pulse_onset);
+
     newTree->Branch("e_chi2", &e_chi2);
     newTree->Branch("e_ndf", &e_ndf);
     newTree->Branch("e_chi2ndf", &e_chi2ndf);
@@ -138,6 +166,14 @@ void treebuilding(){
     newTree->Branch("e_fit_pulse_onset", &e_fit_pulse_onset);
     newTree->Branch("e_fit_r_factor", &e_fit_r_factor);
     newTree->Branch("e_fit_d_factor", &e_fit_d_factor);
+
+    newTree->Branch("e_chi2_set", &e_chi2_set);
+    newTree->Branch("e_ndf_set", &e_ndf_set);
+    newTree->Branch("e_chi2ndf_set", &e_chi2ndf_set);
+    newTree->Branch("e_fit_a_factor_set", &e_fit_a_factor_set);
+    newTree->Branch("e_fit_pulse_onset_set", &e_fit_pulse_onset_set);
+    newTree->Branch("e_fit_r_factor_set", &e_fit_r_factor_set);
+    newTree->Branch("e_fit_d_factor_set", &e_fit_d_factor_set);
 
     newTree->Branch("g_event", &g_event);
     newTree->Branch("g_om_number", &g_om_number);
@@ -147,6 +183,8 @@ void treebuilding(){
     newTree->Branch("g_wave_peak_value", &g_wave_peak_value);
     newTree->Branch("g_wave_peak_time", &g_wave_peak_time);
     newTree->Branch("g_calc_amplitude", &g_calc_amplitude);
+    newTree->Branch("g_pulse_onset", &g_pulse_onset);
+
     newTree->Branch("g_chi2", &g_chi2);
     newTree->Branch("g_ndf", &g_ndf);
     newTree->Branch("g_chi2ndf", &g_chi2ndf);
@@ -155,35 +193,54 @@ void treebuilding(){
     newTree->Branch("g_fit_r_factor", &g_fit_r_factor);
     newTree->Branch("g_fit_d_factor", &g_fit_d_factor);
 
+    newTree->Branch("g_chi2_set", &g_chi2_set);
+    newTree->Branch("g_ndf_set", &g_ndf_set);
+    newTree->Branch("g_chi2ndf_set", &g_chi2ndf_set);
+    newTree->Branch("g_fit_a_factor_set", &g_fit_a_factor_set);
+    newTree->Branch("g_fit_pulse_onset_set", &g_fit_pulse_onset_set);
+    newTree->Branch("g_fit_r_factor_set", &g_fit_r_factor_set);
+    newTree->Branch("g_fit_d_factor_set", &g_fit_d_factor_set);
+
+
     ////////////////////////////////////////////////////////////////////////////////////////////////
     // Step 6: Fill the tree with data                                          ////////////////////
     ////////////////////////////////////////////////////////////////////////////////////////////////
 
     // Determine the number of entries in the tree
-    Long64_t nEntries = 100; // tree->GetEntries();
+    Long64_t nEntries = 10000; //tree->GetEntries();
 
     // Set waveform length
     int ticks = 1024;
     
-
+    // Loop over all entries in the tree
     for (Long64_t j = 0; j < nEntries; j++) {
         tree->GetEntry(j);
-        double e_std_dev = 0;
-        // Loop over elements in the `electron` vector for the current event
+        e_event = j+1;
+        g_event = j+1;
+
+        // Loop over elements in the electron vector for the current event
         for (size_t i = 0; i < electron->size(); i++) {
-            if (electron->at(i) == 1) { // Electron histogram
+            if (electron->at(i) == 1) { 
 
                 // Calculate the baseline and standard deviation of the waveform
-                for (int k = 0; k < 95; k++) {
-                    e_baseline += wave->at(i).at(k);
-                }
-                e_baseline = e_baseline / 96;
-
+                double e_baseline_loop = 0;
                 double e_sum_sq_diff = 0;
-                for (int k = 0; k < 95; k++) {
-                    e_sum_sq_diff += pow(wave->at(i).at(k) - e_baseline, 2);
-                }
+                double e_count = 0;
 
+                for (int k = 0; k < 96; k++) {
+                    double e_value = wave->at(i).at(k);
+                    e_count++;
+
+                    // Update running baseline (mean)
+                    double e_delta = e_value - e_baseline_loop;
+                    e_baseline_loop += e_delta / e_count;
+
+                    // Update running sum of squared differences
+                    e_sum_sq_diff += e_delta * (e_value - e_baseline_loop);
+                }
+                
+
+                // Calculate final standard deviation
                 double e_std_dev = sqrt(e_sum_sq_diff / 95);
 
                 // Find the minimum value of the waveform
@@ -200,64 +257,139 @@ void treebuilding(){
                     }
                 } 
 
-                // Calculate the amplitude of the waveform
-                e_calc_amplitude = e_wave_peak_value - e_baseline;  
+                // Calculate the min and max of the baseline over the first 96 bins
+                double baseline_min = wave->at(i).at(0); // Initialize min with the first value
+                
+                for (int j = 0; j < 96; ++j) {
+                    double val = wave->at(i).at(j);
+                    if (val < baseline_min) baseline_min = val;
+                }
 
+                // Loop through the waveform to find the onset point
+                double e_pulse_onset_loop = 0;
+                for (int k = 0; k < wave->at(i).size(); ++k) {
+                    double val = wave->at(i).at(k);
+
+                    // Check if the value is outside the baseline range
+                    if (val < baseline_min - e_std_dev) {
+                        e_pulse_onset_loop = k;  // Set onset index to current bin
+                        break;  // Stop the loop once the deviation is found
+                    }
+                }
+
+                e_pulse_onset = e_pulse_onset_loop;
+                e_baseline = e_baseline_loop;
+                // Calculate the amplitude of the waveform
+                e_calc_amplitude = e_wave_peak_value - e_baseline; 
+    
+    //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // Fit functions /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
                 // Declare the 1D histogram to hold the waveform data
                 TH1D *e_h_wave = new TH1D(Form("e_h_wave_%d", j), Form("e_h_wave_%d", j), wave->at(i).size(), 0, wave->at(i).size());
                 for (int k=1; k < wave->at(i).size(); k++) {
                     e_h_wave->SetBinContent(k, wave->at(i).at(k-1));
                     e_h_wave->SetBinError(k, e_std_dev);
                 }
-
+   
                 // Declare the fit function for the waveform, embedding e_baseline as a constant value
                 TF1* e_fitFunc = new TF1("e_fitFunc", Form("(1/(1-exp(-[4]*(x-[1]))))*[0]*(exp(-(x-[1])/[2]) - exp(-(x-[1])/[3])) + %f", e_baseline), 200, 900);
-                e_fitFunc->SetParameters(e_calc_amplitude, 266, 18, 10, 5);
+                e_fitFunc->SetParameters(e_calc_amplitude, e_pulse_onset, 18, 10, 5);
 
                 // Perform fit
                 e_h_wave->Fit("e_fitFunc", "RQ"); //fit the range, quietly
 
                 // Get the fit parameters
-                e_chi2 = e_fitFunc->GetChisquare();
-                e_ndf = e_fitFunc->GetNDF();
+                double e_chi2_l = e_fitFunc->GetChisquare();
+                double e_ndf_l = e_fitFunc->GetNDF();
+                double e_chi2ndf_l = e_chi2 / e_ndf;
+                double e_fit_a_factor_l = e_fitFunc->GetParameter(0);
+                double e_fit_pulse_onset_l = e_fitFunc->GetParameter(1);
+                double e_fit_r_factor_l = e_fitFunc->GetParameter(2);
+                double e_fit_d_factor_l = e_fitFunc->GetParameter(3);
+            ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+                // Declare the 1D histogram to hold the waveform data
+                TH1D *e_h_wave_set = new TH1D(Form("e_h_wave_set_%d", j), Form("e_h_wave_set_%d", j), wave->at(i).size(), 0, wave->at(i).size());
+                for (int k=1; k < wave->at(i).size(); k++) {
+                    e_h_wave_set->SetBinContent(k, wave->at(i).at(k-1));
+                    e_h_wave_set->SetBinError(k, e_std_dev);
+                }
+   
+                // Declare the fit function for the waveform, embedding e_baseline as a constant value
+                TF1* e_fitFunc_set = new TF1("e_fitFunc_set", Form("(1/(1-exp(-[4]*(x-[1]))))*%f*(exp(-(x-[1])/[2]) - exp(-(x-[1])/[3])) + %f", e_calc_amplitude, e_baseline), 200, 900);
+                e_fitFunc_set->SetParameters(e_pulse_onset, 18, 10, 5);
+
+                // Perform fit
+                e_h_wave_set->Fit("e_fitFunc", "RQ"); //fit the range, quietly
+
+                
+
+                // Get the fit parameters
+                double e_chi2_set_l = e_fitFunc_set->GetChisquare();
+                double e_ndf_set_l = e_fitFunc_set->GetNDF();
+                double e_chi2ndf_set_l = e_chi2_set_l / e_ndf_set_l;
+                double e_fit_a_factor_set_l = e_fitFunc_set->GetParameter(0);
+                double e_fit_pulse_onset_set_l = e_fitFunc_set->GetParameter(1);
+                double e_fit_r_factor_set_l = e_fitFunc_set->GetParameter(2);
+                double e_fit_d_factor_set_l = e_fitFunc_set->GetParameter(3);
+                
+                
+                e_chi2 = e_chi2_l;
+                e_ndf = e_ndf_l;
                 e_chi2ndf = e_chi2 / e_ndf;
-                e_fit_a_factor = e_fitFunc->GetParameter(0);
-                e_fit_pulse_onset = e_fitFunc->GetParameter(1);
-                e_fit_r_factor = e_fitFunc->GetParameter(2);
-                e_fit_d_factor = e_fitFunc->GetParameter(3);
+                e_fit_a_factor = e_fit_a_factor_l;
+                e_fit_pulse_onset = e_fit_pulse_onset_l;
+                e_fit_r_factor = e_fit_r_factor_l;
+                e_fit_d_factor = e_fit_d_factor_l;
+
+                e_chi2_set = e_chi2_set_l;
+                e_ndf_set = e_ndf_set_l;
+                e_chi2ndf_set = e_chi2_set_l;
+                e_fit_a_factor_set = e_fit_a_factor_set_l;
+                e_fit_pulse_onset_set = e_fit_pulse_onset_set_l;
+                e_fit_r_factor_set = e_fit_r_factor_set_l;
 
                 // Get the other parameters of the waveform from the original file
                 e_event = j;
                 e_om_number = om_number->at(i);
                 e_energy = energy->at(i);
-                e_charge = charge->at(i);
-
+                e_charge = charge->at(i); 
+            
                 // Fill the tree with the data
-                newTree->Fill();
+                newTree->Fill();  // Fill once for e_ variables
+            
 
                 // Clean up
                 delete e_h_wave;  // Prevent memory leaks by deleting the histogram after saving
-            
+                delete e_h_wave_set;  // Prevent memory leaks by deleting the histogram after saving
 
                 // Reset the variables for the next loop iteration
-                e_event = -1;
+               e_event = -1;
             
 
 
             } 
             else if (electron->at(i) == 0) { // Gamma histogram
-
+               
                 // Calculate the baseline and standard deviation of the waveform
-                for (int k = 0; k < 95; k++) {
-                    g_baseline += wave->at(i).at(k);
-                }
-                g_baseline = g_baseline / 96;
-
+                double g_baseline_loop = 0;
                 double g_sum_sq_diff = 0;
-                for (int k = 0; k < 95; k++) {
-                    g_sum_sq_diff += pow(wave->at(i).at(k) - g_baseline, 2);
-                }
+                double g_count = 0;
 
+                for (int k = 0; k < 96; k++) {
+                    double g_value = wave->at(i).at(k);
+                    g_count++;
+
+                    // Update running baseline (mean)
+                    double g_delta = g_value - g_baseline_loop;
+                    g_baseline_loop += g_delta / g_count;
+
+                    // Update running sum of squared differences
+                    g_sum_sq_diff += g_delta * (g_value - g_baseline_loop);
+                }
+                
+
+                // Calculate final standard deviation
                 double g_std_dev = sqrt(g_sum_sq_diff / 95);
 
                 // Find the minimum value of the waveform
@@ -274,54 +406,116 @@ void treebuilding(){
                     }
                 } 
 
-                // Calculate the amplitude of the waveform
-                g_calc_amplitude = g_wave_peak_value - g_baseline;  
+                // Calculate the min and max of the baseline over the first 96 bins
+                double g_baseline_min = wave->at(i).at(0); // Initialize min with the first value
+                
+                for (int j = 0; j < 96; ++j) {
+                    double val = wave->at(i).at(j);
+                    if (val < g_baseline_min) g_baseline_min = val;
+                }
 
+                // Loop through the waveform to find the onset point
+                double g_pulse_onset_loop = 0;
+                for (int k = 0; k < wave->at(i).size(); ++k) {
+                    double val = wave->at(i).at(k);
+
+                    // Check if the value is outside the baseline range
+                    if (val < g_baseline_min - g_std_dev) {
+                        g_pulse_onset_loop = k;  // Set onset index to current bin
+                        break;  // Stop the loop once the deviation is found
+                    }
+                }
+
+                g_pulse_onset = g_pulse_onset_loop;
+                g_baseline = g_baseline_loop;
+                // Calculate the amplitude of the waveform
+                g_calc_amplitude = g_wave_peak_value - g_baseline; 
+    
+    //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // Fit functions /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
                 // Declare the 1D histogram to hold the waveform data
                 TH1D *g_h_wave = new TH1D(Form("g_h_wave_%d", j), Form("g_h_wave_%d", j), wave->at(i).size(), 0, wave->at(i).size());
                 for (int k=1; k < wave->at(i).size(); k++) {
                     g_h_wave->SetBinContent(k, wave->at(i).at(k-1));
                     g_h_wave->SetBinError(k, g_std_dev);
                 }
-
+   
                 // Declare the fit function for the waveform, embedding g_baseline as a constant value
                 TF1* g_fitFunc = new TF1("g_fitFunc", Form("(1/(1-exp(-[4]*(x-[1]))))*[0]*(exp(-(x-[1])/[2]) - exp(-(x-[1])/[3])) + %f", g_baseline), 200, 900);
-                g_fitFunc->SetParameters(g_calc_amplitude, 266, 18, 10, 5);
+                g_fitFunc->SetParameters(g_calc_amplitude, g_pulse_onset, 18, 10, 5);
 
                 // Perform fit
                 g_h_wave->Fit("g_fitFunc", "RQ"); //fit the range, quietly
 
                 // Get the fit parameters
-                g_chi2 = g_fitFunc->GetChisquare();
-                g_ndf = g_fitFunc->GetNDF();
-                g_chi2ndf = g_chi2 / g_ndf;
-                g_fit_a_factor = g_fitFunc->GetParameter(0);
-                g_fit_pulse_onset = g_fitFunc->GetParameter(1);
-                g_fit_r_factor = g_fitFunc->GetParameter(2);
-                g_fit_d_factor = g_fitFunc->GetParameter(3);
-                
-                // Get the other parameters of the waveform from the original file
+                double g_chi2_l = g_fitFunc->GetChisquare();
+                double g_ndf_l = g_fitFunc->GetNDF();
+                double g_chi2ndf_l = g_chi2_l / g_ndf_l;
+                double g_fit_a_factor_l = g_fitFunc->GetParameter(0);
+                double g_fit_pulse_onset_l = g_fitFunc->GetParameter(1);
+                double g_fit_r_factor_l = g_fitFunc->GetParameter(2);
+                double g_fit_d_factor_l = g_fitFunc->GetParameter(3);
+            ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+                // Declare the 1D histogram to hold the waveform data
+                TH1D *g_h_wave_set = new TH1D(Form("g_h_wave_set_%d", j), Form("g_h_wave_set_%d", j), wave->at(i).size(), 0, wave->at(i).size());
+                for (int k=1; k < wave->at(i).size(); k++) {
+                    g_h_wave_set->SetBinContent(k, wave->at(i).at(k-1));
+                    g_h_wave_set->SetBinError(k, g_std_dev);
+                }
+   
+                // Declare the fit function for the waveform, embedding g_baseline as a constant value
+                TF1* g_fitFunc_set = new TF1("g_fitFunc_set", Form("(1/(1-exp(-[4]*(x-[1]))))*%f*(exp(-(x-[1])/[2]) - exp(-(x-[1])/[3])) + %f", g_calc_amplitude, g_baseline), 200, 900);
+                g_fitFunc_set->SetParameters(g_pulse_onset, 18, 10, 5);
 
+                // Perform fit
+                g_h_wave_set->Fit("g_fitFunc", "RQ"); //fit the range, quietly
+
+                // Get the fit parameters
+                double g_chi2_set_l = g_fitFunc_set->GetChisquare();
+                double g_ndf_set_l = g_fitFunc_set->GetNDF();
+                double g_chi2ndf_set_l = g_chi2_set_l / g_ndf_set_l;
+                double g_fit_a_factor_set_l = g_fitFunc_set->GetParameter(0);
+                double g_fit_pulse_onset_set_l = g_fitFunc_set->GetParameter(1);
+                double g_fit_r_factor_set_l = g_fitFunc_set->GetParameter(2);
+                double g_fit_d_factor_set_l = g_fitFunc_set->GetParameter(3);
+
+                g_chi2 = g_chi2_l;
+                g_ndf = g_ndf_l;
+                g_chi2ndf = g_chi2ndf_l;
+                g_fit_a_factor = g_fit_a_factor_l;
+                g_fit_pulse_onset = g_fit_pulse_onset_l;
+                g_fit_r_factor = g_fit_r_factor_l;
+                g_fit_d_factor = g_fit_d_factor_l;
+
+                g_chi2_set = g_chi2_set_l;
+                g_ndf_set = g_ndf_set_l;
+                g_chi2ndf_set = g_chi2_set_l;
+                g_fit_a_factor_set = g_fit_a_factor_set_l;
+                g_fit_pulse_onset_set = g_fit_pulse_onset_set_l;
+                g_fit_r_factor_set = g_fit_r_factor_set_l;
+
+                // Get the other parameters of the waveform from the original file
                 g_event = j;
                 g_om_number = om_number->at(i);
                 g_energy = energy->at(i);
                 g_charge = charge->at(i);
 
                 // Fill the tree with the data
-                newTree->Fill();
+                newTree->Fill();  // Fill once for g_ variables
+            
 
                 // Clean up
                 delete g_h_wave;  // Prevent memory leaks by deleting the histogram after saving
-                
+                delete g_h_wave_set;  // Prevent memory leaks by deleting the histogram after saving
+
                 // Reset the variables for the next loop iteration
-                g_event = -1;
-              
+               g_event = -1;
 
             }
           
         }
     }
-    
     ////////////////////////////////////////////////////////////////////////////////////////////////
     // Step 7: Write the tree to the file                                       ////////////////////
     ////////////////////////////////////////////////////////////////////////////////////////////////
