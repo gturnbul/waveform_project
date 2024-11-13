@@ -1,6 +1,9 @@
 #include <vector>
 #include <string>
 #include <iostream>
+#include <fstream>
+#include <TFile.h>   // ROOT file handling
+#include <TTree.h>   // ROOT tree structure
 
 void prefixtest() {
 
@@ -15,7 +18,7 @@ void prefixtest() {
 
     // Open the input file to read the boolean indicators
     std::ifstream input_file("prefix_e_vector.txt");
-    
+
     // Read the 1D vector from the file (1 or 0)
     int value;
     while (input_file >> value) {
@@ -27,54 +30,65 @@ void prefixtest() {
         }
     }
 
-    // Ensure the size of prefix_indicator matches the size of other data vectors
+    // Ensure the size of electron_indicator matches the size of other data vectors
     if (electron_indicator.size() != energy.size()) {
-        std::cerr << "Mismatch in data size between prefix_indicator and other data vectors." << std::endl;
+        std::cerr << "Mismatch in data size between electron_indicator and other data vectors." << std::endl;
         return;
     }
-    // Vectors to store the formatted output strings
-    std::vector<std::string> electron_vars;
-    std::vector<std::string> gamma_vars;
 
-    // Loop through the data
+    // Open the ROOT file where the data will be saved
+    TFile* newFile = new TFile("prefixtest.root", "RECREATE");
+
+    // Create a TTree to store the data
+    TTree* newTree = new TTree("Result_tree", "Tree with electron and gamma data");
+
+    // Declare variables to hold data for each branch
+    double energy_var; 
+    double charge_var;
+    int om_number_var;
+    double event_var;
+
+    // Create branches for electron data (e_)
+    newTree->Branch("e_energy", &energy_var, "e_energy/D");
+    newTree->Branch("e_charge", &charge_var, "e_charge/D");
+    newTree->Branch("e_om_number", &om_number_var, "e_om_number/I");
+    newTree->Branch("e_event", &event_var, "e_event/I");
+
+    // Create branches for gamma data (g_)
+    newTree->Branch("g_energy", &energy_var, "g_energy/D");
+    newTree->Branch("g_charge", &charge_var, "g_charge/D");
+    newTree->Branch("g_om_number", &om_number_var, "g_om_number/I");
+    newTree->Branch("g_event", &event_var, "g_event/I");
+
+    // Loop through the data and fill the TTree
     for (int i = 0; i < electron_indicator.size(); i++) {
+        // Based on the prefix (e_ or g_), assign data to the corresponding variables
+        if (electron_indicator[i]==1) {
+            // For electron (e_)
+            energy_var = energy[i];
+            charge_var = charge[i];
+            om_number_var = om_number[i];
+            event_var = event[i];
 
-        // Determine the prefix based on the value in electron_indicator
-        std::string prefix = electron_indicator[i] ? "e_" : "g_";
+            // Fill the branches for e_
+            newTree->Fill();
+        } else if (electron_indicator[i]==0) {
+            // For gamma (g_)
+            energy_var = energy[i];
+            charge_var = charge[i];
+            om_number_var = om_number[i];
+            event_var = event[i];
 
-        // Format each variable with its corresponding value
-        std::string energy_str = prefix + "energy: " + std::to_string(energy[i]);
-        std::string charge_str = prefix + "charge: " + std::to_string(charge[i]);
-        std::string om_number_str = prefix + "om_number: " + std::to_string(om_number[i]);
-        std::string event_str = prefix + "event: " + std::to_string(event[i]);
-        
-        // Store each formatted string in the appropriate vector
-        if (electron_indicator[i]) {
-            electron_vars.push_back(event_str);
-            electron_vars.push_back(energy_str);
-            electron_vars.push_back(charge_str);
-            electron_vars.push_back(om_number_str);
-            
-        } else {
-            gamma_vars.push_back(event_str);
-            gamma_vars.push_back(energy_str);
-            gamma_vars.push_back(charge_str);
-            gamma_vars.push_back(om_number_str);
-            
+            // Fill the branches for g_
+            newTree->Fill();
         }
     }
 
-    // Print the electron-prefixed data
-    std::cout << "Electron Variables (e_):" << std::endl;
-    for (const auto& var : electron_vars) {
-        std::cout << var << std::endl;
-    }
+    // Write the tree to the file
+    newTree->Write();
 
-    // Print the gamma-state-prefixed data
-    std::cout << "\ngamma State Variables (g_):" << std::endl;
-    for (const auto& var : gamma_vars) {
-        std::cout << var << std::endl;
-    }
+    // Close the ROOT file
+    newFile->Close();
 }
 ============================ included for later, but not needed now =============================
 // Main function to run the test
