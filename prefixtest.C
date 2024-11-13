@@ -14,7 +14,7 @@ void prefixtest() {
 
     // Vectors to store the formatted output strings
     std::vector<std::string> electron_vars;
-    std::vector<std::string> ground_vars;
+    std::vector<std::string> gamma_vars;
 
     for (int i = 0; i < electron_indicator.size(); i++) {
         // Determine the prefix based on the value in electron_indicator
@@ -33,10 +33,10 @@ void prefixtest() {
             electron_vars.push_back(om_number_str);
             electron_vars.push_back(event_str);
         } else {
-            ground_vars.push_back(energy_str);
-            ground_vars.push_back(charge_str);
-            ground_vars.push_back(om_number_str);
-            ground_vars.push_back(event_str);
+            gamma_vars.push_back(energy_str);
+            gamma_vars.push_back(charge_str);
+            gamma_vars.push_back(om_number_str);
+            gamma_vars.push_back(event_str);
         }
     }
 
@@ -46,9 +46,9 @@ void prefixtest() {
         std::cout << var << std::endl;
     }
 
-    // Print the ground-state-prefixed data
-    std::cout << "\nGround State Variables (g_):" << std::endl;
-    for (const auto& var : ground_vars) {
+    // Print the gamma-state-prefixed data
+    std::cout << "\ngamma State Variables (g_):" << std::endl;
+    for (const auto& var : gamma_vars) {
         std::cout << var << std::endl;
     }
 }
