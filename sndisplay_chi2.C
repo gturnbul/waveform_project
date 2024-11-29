@@ -37,9 +37,9 @@ void sndisplay_calorimeter_test_values (bool with_palette = true)
 
   for (int omnum=0; omnum<520; ++omnum) // MW
     if(chi2ndf_count[omnum]>0){
-      //double average = chi2ndf_sum[omnum]/chi2ndf_count[omnum];
+      double average = chi2ndf_sum[omnum]/chi2ndf_count[omnum];
       double counts = chi2ndf_count[omnum];
-      sncalo->setcontent(omnum, counts );
+      sncalo->setcontent(omnum, average );
     } else {
       sncalo->setcontent(omnum,0);
     }
