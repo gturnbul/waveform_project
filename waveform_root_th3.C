@@ -170,27 +170,12 @@ int main(int argc, char const *argv[]) {
 
             if (wave_k.empty()) continue;
 
-            // Track whether we've seen this OM & memory cell in the current event
-            std::set<int> seen_events;
-
             for (int bin_no = 0; bin_no < wave_k.size(); ++bin_no) {
                 short wave_value = wave_k[bin_no];
                 if (wave_value > 3000) {
                     int mem_cell_no = get_cell(bin_no, fcr_value);
-
-                    if (om_num == 64 && mem_cell_no == 799) {
-                        total_occurrences++;  // Count occurrences across all events
-
-                        // Check if we've seen this event before
-                        if (seen_events.count(event)) {
-                            std::cout << "WARNING: Duplicate entry in Event " << event 
-                                    << " for OM 64, Mem Cell 799!" << std::endl;
-                        } else {
-                            seen_events.insert(event);  // Mark this event as seen
-                        }
-
                         hist->Fill(om_num, mem_cell_no, wave_value);
-                    }
+                    
                 }
             }
         }
@@ -203,9 +188,6 @@ int main(int argc, char const *argv[]) {
     hist->Write();
     outfile->Close();
     file->Close();
-
-    // Print the final total occurrences at the end
-    std::cout << "Total occurrences of OM 64, Mem Cell 799: " << total_occurrences << std::endl;
 
     return 0;
 }
