@@ -1,3 +1,14 @@
+/*
+First code to run. 
+Takes in UDD file need to specify -r [run number] -om_min [min om number] -om_max [max om number] in order to run.
+This code should run on empty waveforms and so some noise suppression is built in.
+1. it removes any events with a standard devation greater than 4 (standard deviation calculated on the full waveform 1024 bins)
+2. it removes the known noise at the end of the waveform by replacing bins 976-1023 with 0-48 
+It then creates histograms for each memory cell of each optical module.
+The second loop performs a gaussian fit to ascertain the mean and std dev of the offset.
+Finally, it saves all the offset values to a csv file.
+*/
+
 #include <iostream>
 #include <fstream>
 #include <sstream>
