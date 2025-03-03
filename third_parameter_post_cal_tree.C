@@ -1,3 +1,16 @@
+/*
+Third code to run. This takes in the calibrated waveform tree generated in 
+second_calibrated_raw.C 
+It looks for the baseline (first 96 bins of the waveform) and the standard 
+deviation of that.
+It looks for the minimum point in the wave and logs the wave_min_time and 
+wave_min_value (the latter of which is used in conjunction with the baseline
+to calculate the amplitude for later calculations.
+The fit is then applied with some starting parameters based on the amplitude 
+and the wave_min_time.
+This is then saved to a tree for analysis.
+*/
+
 // Standard C++ libraries
 #include <iostream>
 #include <fstream>
