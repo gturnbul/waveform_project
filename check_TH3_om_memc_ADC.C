@@ -1,3 +1,8 @@
+/*
+Creates a TH3 of the om number, mem cell and waveform value.
+This allows the user to see the distribution of waveform values 
+across the memory cells and OMs.
+*/
 #include <iostream>
 #include <fstream>
 #include <sstream>
