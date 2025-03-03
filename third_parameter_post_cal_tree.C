@@ -1,35 +1,58 @@
-#include "TStyle.h"
-#include "TMath.h"
-#include "TCanvas.h"
-#include "TPaveText.h"
+// Standard C++ libraries
 #include <iostream>
-#include <memory>
-#define _USE_MATH_DEFINES
 #include <fstream>
 #include <sstream>
 #include <vector>
+#include <unordered_map>
+#include <utility> // For std::pair
+#include <cmath>         // For math functions (with _USE_MATH_DEFINES)
+#include <cassert>       // For debugging assertions
+#include <numeric>
+#include <set>
+
+// ROOT Core Libraries
+#include "TROOT.h"
+#include "TFile.h"
+#include "TTree.h"
+#include "TBranch.h"
+#include "TKey.h"
+#include "TParameter.h"
+#include <TString.h>      // For ROOT string handling
+#include <TObjArray.h>    // For working with ROOT arrays
+
+// ROOT Graphical Libraries
+#include "TCanvas.h"
+#include "TStyle.h"
+#include "TLine.h"
+#include <TPaletteAxis.h>
+#include <TText.h>
+#include <TLatex.h>
+#include <TLegend.h>
+
+// ROOT Graphing and Histogram Libraries
 #include <TH1D.h>
 #include <TH2D.h>
 #include <TH3D.h>
-#include <TF1.h>
-#include <TStyle.h>
-#include "TKey.h"
-#include "TFile.h"
-#include "TTree.h"
-#include "TLine.h"
-#include "TROOT.h"
-#include <TText.h>
-#include <TLatex.h>
-#include <TRandom3.h>
-#include <TLegend.h>
-#include <TSystem.h>
 #include <TGraph.h>
 #include <TGraphErrors.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <TParameter.h>
-#include <TPaletteAxis.h>
+#include <TPie.h>
+#include <TPieSlice.h>
+
+// ROOT Random Number Generator
+#include <TRandom3.h>
+
+// ROOT Fitting Libraries
+#include <TF1.h>
+
+// Additional ROOT Utilities
+#include <TPaveText.h>
 #include <TArrayF.h>
+
+// Boost for hash_map
+#include <boost/functional/hash.hpp> // For boost::hash
+
+// Macro Definition
+#define _USE_MATH_DEFINES
 
 using namespace std;
 
@@ -37,7 +60,7 @@ void waveform_tree() {
     ////////////////////////////////////////////////////////////////////////////////////////////////
     // Step 0: Open the existing ROOT file with the original tree               ////////////////////
     ////////////////////////////////////////////////////////////////////////////////////////////////
-    TFile *file = TFile::Open("filtered_gamma_fcr.root", "READ");
+    TFile *file = TFile::Open("waveform_gill_calibration.root", "READ");
     if (!file || file->IsZombie()) {
         cout << "Error: Could not open input file!" << endl;
         return;
@@ -46,7 +69,7 @@ void waveform_tree() {
     ////////////////////////////////////////////////////////////////////////////////////////////////
     // Step 1: Access the original tree                                         ////////////////////
     ////////////////////////////////////////////////////////////////////////////////////////////////
-    TTree *tree = (TTree*)file->Get("Result_tree");
+    TTree *tree = (TTree*)file->Get("treebuild");
     if (!tree) {
         cout << "Error: Could not find tree in file!" << endl;
         file->Close();
@@ -76,7 +99,7 @@ void waveform_tree() {
     ////////////////////////////////////////////////////////////////////////////////////////////////
     // Step 3: Create a new ROOT file to store the new tree and new tree        ////////////////////
     ////////////////////////////////////////////////////////////////////////////////////////////////
-    TFile *newFile = new TFile("waveform_tree.root", "RECREATE");
+    TFile *newFile = new TFile("waveform_tree_gill.root", "RECREATE");
     TTree *newTree = new TTree("treebuild", "treebuild");
 
     ////////////////////////////////////////////////////////////////////////////////////////////////
