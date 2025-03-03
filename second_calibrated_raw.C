@@ -1,3 +1,9 @@
+/*
+Second code to run. This uses the offsets calculated in first_read_from_udd.C 
+and reads them in from a csv file. It then produces the tree again, but with 
+the calibrated waveform.
+*/
+
 // Standard C++ libraries
 #include <iostream>
 #include <fstream>
