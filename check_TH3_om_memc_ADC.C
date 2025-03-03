@@ -136,9 +136,6 @@ int main(int argc, char const *argv[]) {
     TFile *outfile = new TFile("waveform_data_TH3v1.root", "RECREATE");
     hist->Reset();
 
-    // Counter for total occurrences
-    int total_occurrences = 0;
-
     int max_entries = tree->GetEntries();
     for (int event = 0; event < max_entries; ++event) {
         tree->GetEntry(event);
@@ -166,9 +163,39 @@ int main(int argc, char const *argv[]) {
             }
 
             int fcr_value = fcr->at(k);
-            const std::vector<short> &wave_k = wave->at(k);
+            std::vector<short> &wave_k = wave->at(k);
+
+            if (wave_k.size() >= 1024) {  // Ensure the waveform is long enough
+                for (int i = 0; i < 48; ++i) {
+                    wave_k[976 + i] = wave_k[i];  // Copy values from bins 0-47 to 976-1023
+                }
+            }
+            
+            //////////////////////////////////////////////////////////////////////////////////////////
+            // Calculate BASELINE
+            int known_noise = 976;  // Known noise at the end of the waveform (but still multiple of 16)
+            double baseline = 0;
+            for (int bin_no = 0; bin_no < known_noise; ++bin_no) {
+                baseline += wave_k.at(bin_no);  // Access waveform for event i
+            }
+            baseline = baseline / known_noise;  // Calculate average baseline
+
+            // Calculate Standard Deviation
+            double sum_sq_diff = 0;
+            for (int bin_no = 0; bin_no < known_noise; ++bin_no) {
+                sum_sq_diff += pow(wave_k.at(bin_no) - baseline, 2);  // Calculate variance
+            }
+            double std_dev = sqrt(sum_sq_diff / known_noise);  // Standard deviation
+
+            //////////////////////////////////////////////////////////////////////////////////////////
+
 
             if (wave_k.empty()) continue;
+
+            if (std_dev > 4){
+                continue;
+            }
+            
 
             for (int bin_no = 0; bin_no < wave_k.size(); ++bin_no) {
                 short wave_value = wave_k[bin_no];
@@ -191,3 +218,4 @@ int main(int argc, char const *argv[]) {
 
     return 0;
 }
+
