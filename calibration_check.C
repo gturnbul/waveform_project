@@ -1,3 +1,6 @@
+/*
+a way to compare two csv files of offsets, to check they align.
+*/
 #include <iostream>
 #include <fstream>
 #include <sstream>
