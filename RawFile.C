@@ -72,6 +72,20 @@ int calculate_om_num(std::vector<int> *calo_type, std::vector<int> *calo_side,
     return om_num;
 }
 
+// Function to calculate timestamp difference per OM
+double calculate_timestamp_diff(int om_num, double current_timestamp) {
+    static std::unordered_map<int, double> last_timestamp_per_om;
+
+    double timestamp_diff = -1;
+    if (last_timestamp_per_om.find(om_num) != last_timestamp_per_om.end()) {
+        timestamp_diff = current_timestamp - last_timestamp_per_om[om_num];
+    }
+    last_timestamp_per_om[om_num] = current_timestamp;
+
+    return timestamp_diff;
+}
+
+// Function to plot waveform
 void PlotWaveform(int event, int om_num, std::vector<short>& wave_k) {
     if (wave_k.empty()) {
         std::cout << "Warning: empty waveform for event " << event << " om_num " << om_num << std::endl;
@@ -108,7 +122,7 @@ double calculate_baseline(const std::vector<short>& waveform) {
 }
 
 // Function to calculate chi2df
-double calculate_chi2ndf(const std::vector<short>& waveform, double baseline) {
+double calculate_stddev(const std::vector<short>& waveform, double baseline) {
     double sum_sq_diff = 0;
     for (int i = 0; i < 976; ++i) {
         sum_sq_diff += pow(waveform[i] - baseline, 2);
@@ -210,8 +224,7 @@ TTree *baseline_tree = new TTree("baseline_tree", "OM baseline data");
 // initialise output variables
 int om_num_out = -1;
 double baseline_out = 0;
-double chi2ndf_out = 0;
-double max_baseline = -1;
+double stddev_out = 0;
 int event_num = -1;
 double eom = 0;
 double timestamp_out = 0;
@@ -222,7 +235,7 @@ double timestamp_diff = -1;
 baseline_tree->Branch("event_num", &event_num, "event_num/I");
 baseline_tree->Branch("om_num", &om_num_out, "om_num/I");
 baseline_tree->Branch("baseline", &baseline_out, "baseline/D");
-baseline_tree->Branch("chi2ndf", &chi2ndf_out, "chi2ndf/D");
+baseline_tree->Branch("stddev", &stddev_out, "stddev/D");
 baseline_tree->Branch("eom", &eom, "eom/D");
 baseline_tree->Branch("timestamp", &timestamp_out, "timestamp/D");
 baseline_tree->Branch("timestamp_diff", &timestamp_diff, "timestamp_diff/D");
@@ -241,18 +254,19 @@ for (int event = 0; event < max_entries; ++event) {
 
         std::vector<short>& wave_k = wave->at(k);
         double baseline = calculate_baseline(wave_k);
-        double chi2ndf = calculate_chi2ndf(wave_k, baseline);
+        double stddev = calculate_stddev(wave_k, baseline);
         eom = calculate_eom(wave_k, baseline);
 
         om_num_out = om_num;
         baseline_out = baseline;
-        chi2ndf_out = chi2ndf;
+        stddev_out = stddev;
         event_num = event;
         timestamp_out = timestamp->at(k)* 6.25e-9; // Convert to seconds;
+        timestamp_diff = calculate_timestamp_diff(om_num, timestamp_out);
 
-        baseline_tree->Fill();  //      }
+        baseline_tree->Fill();  
 
-    }
+        }
 }
 //output the number of entries to the terminal
 cout << "Max entries: " << max_entries << "\n";
@@ -264,3 +278,4 @@ delete outfile;
 
 file->Close();
 }
+
