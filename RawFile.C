@@ -29,59 +29,7 @@
 #include <TText.h>
 #include <TLatex.h>
 #include <TLegend.h>
-
-// ROOT Graphing and Histogram Libraries
-#include <TH1D.h>
-#include <TH2D.h>
-#include <TH3D.h>
-#include <TGraph.h>
-#include <TGraphErrors.h>
-
-// ROOT Random Number Generator
-#include <TRandom3.h>
-
-// ROOT Fitting Libraries
-#include <TF1.h>
-
-// Additional ROOT Utilities
-#include <TPaveText.h>
-#include <TArrayF.h>
-
-// Macro Definition
-#define _USE_MATH_DEFINES
-
-using namespace std;
-
-
-#include <iostream>
-#include <fstream>
-#include <sstream>
-#include <vector>
-#include <set>
-#include <memory>
-#include <cmath>         // For math functions (with _USE_MATH_DEFINES)
-#include <sys/stat.h>    // For file system operations
-#include <sys/types.h>   // For file system types
-#include <cassert>       // For debugging assertions
-
-// ROOT Core Libraries
-#include "TROOT.h"
-#include "TFile.h"
-#include "TTree.h"
-#include "TBranch.h"
-#include "TKey.h"
-#include "TParameter.h"
-#include <TString.h>      // For ROOT string handling
-#include <TObjArray.h>    // For working with ROOT arrays
-
-// ROOT Graphical Libraries
-#include "TCanvas.h"
-#include "TStyle.h"
-#include "TLine.h"
-#include <TPaletteAxis.h>
-#include <TText.h>
-#include <TLatex.h>
-#include <TLegend.h>
+#include "TMultiGraph.h"
 
 // ROOT Graphing and Histogram Libraries
 #include <TH1D.h>
@@ -168,12 +116,57 @@ double calculate_chi2ndf(const std::vector<short>& waveform, double baseline) {
     return sqrt(sum_sq_diff / 976);
 }
 
+// Function to calculate error on the mean (EOM), with sigma calculated inside
+double calculate_eom(const std::vector<short>& waveform, double baseline) {
+    int N = waveform.size();
+    double sum_sq_diff = 0.0;
+
+    for (int i = 0; i < N; ++i) {
+        double diff = waveform[i] - baseline;
+        sum_sq_diff += diff * diff;
+    }
+
+    double variance = sum_sq_diff / N;      // Population variance
+    double sigma = std::sqrt(variance);     // Standard deviation
+    double eom = sigma / std::sqrt(N);      // Error on the mean
+
+    return eom;
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////
 // Get memory cell from bin number and FCR
 int get_cell(int bin_no, int fcr) {
     return (bin_no + fcr) % 1024; // Now ranges from 0 to 1023
 }
+
+std::vector<short> reorder_waveform(const std::vector<short>& waveform, int fcr) {
+    std::vector<short> reordered(1024, -999);  // Use -999 as a null marker
+
+    int max_bins = std::min((int)waveform.size(), 976);  // eliminate end of waveform spike
+    for (int i = 0; i < max_bins; ++i) {
+        int reordered_index = get_cell(i, fcr);  // [0, 1023]
+        reordered[reordered_index] = waveform[i];
+    }
+
+    return reordered;
+}
+// Clean and reorder the waveform
+std::vector<short> clean_and_reorder(const std::vector<short>& waveform, int fcr) {
+    std::vector<short> cleaned = waveform;
+
+    for (int i = 0; i < 48; ++i) {
+        cleaned[1024 - 48 + i] = cleaned[i];
+    }
+
+    std::vector<short> reordered;
+    reordered.reserve(1024);
+    for (int i = 0; i < 1024; ++i) {
+        reordered.push_back(cleaned[get_cell(i, fcr)]);
+    }
+
+    return reordered;
+}
+
 
 
 //////////////////////////////////////////////////////////////////////////////////////
@@ -192,6 +185,7 @@ std::vector<int> *calo_column = nullptr;
 std::vector<int> *calo_row = nullptr;
 std::vector<int> *calo_type = nullptr;
 std::vector<int> *fcr = nullptr;
+std::vector<int> *timestamp = nullptr;
 int calo_nohits = 0;
 
 // Set branch addresses
@@ -203,13 +197,15 @@ tree->SetBranchAddress("digicalo.column", &calo_column);
 tree->SetBranchAddress("digicalo.row", &calo_row);
 tree->SetBranchAddress("digicalo.type", &calo_type);
 tree->SetBranchAddress("digicalo.fcr", &fcr);
+tree->SetBranchAddress("digicalo.timestamp", &timestamp);
 
 // Get the number of entries in the tree
 int max_entries = tree->GetEntries();
 
 // Create output ROOT file and TTree for baseline data
-TFile *outfile = new TFile("baseline_output_tree.root", "RECREATE");
+TFile *outfile = new TFile("baseline_output_tree1143.root", "RECREATE");
 TTree *baseline_tree = new TTree("baseline_tree", "OM baseline data");
+
 
 // initialise output variables
 int om_num_out = -1;
@@ -217,95 +213,54 @@ double baseline_out = 0;
 double chi2ndf_out = 0;
 double max_baseline = -1;
 int event_num = -1;
-int count_chi2ndf_gt3 = 0;
-std::set<int> valid_om_nums; // stores unique OMs with valid waveform
+double eom = 0;
+double timestamp_out = 0;
+double timestamp_diff = -1;
 
 
 // Create branches in the output tree
+baseline_tree->Branch("event_num", &event_num, "event_num/I");
 baseline_tree->Branch("om_num", &om_num_out, "om_num/I");
 baseline_tree->Branch("baseline", &baseline_out, "baseline/D");
 baseline_tree->Branch("chi2ndf", &chi2ndf_out, "chi2ndf/D");
-baseline_tree->Branch("event_num", &event_num, "event_num/I");
+baseline_tree->Branch("eom", &eom, "eom/D");
+baseline_tree->Branch("timestamp", &timestamp_out, "timestamp/D");
+baseline_tree->Branch("timestamp_diff", &timestamp_diff, "timestamp_diff/D");
 
-// //Define the range of events to process
-// std:set<int> selected_events = {0, 1, 2, 3, 4, 5}; // Example: process events 0 to 5
-// // Define your allowed OMs:
-// std::set<int> allowed_oms = {64,65,66};  // put the OM numbers you want here
 
 // Create a histogram for the baseline distribution
 TH1D *baseline_hist = new TH1D("baseline_hist", "Baseline Distribution;Baseline [ADC];Entries", 100, 0, 4000);
+std::unordered_map<int, double> last_timestamp_per_om;
 
 // loop over the entries in the tree
 for (int event = 0; event < max_entries; ++event) {
-    // Skip events not in the selected set
-    // if (selected_events.find(event) == selected_events.end()) {
-    //     continue;
-    // }
-
     tree->GetEntry(event);
 
     for (int k = 0; k < calo_nohits; ++k) {
         int om_num = calculate_om_num(calo_type, calo_side, calo_wall, calo_column, calo_row, k);
 
-        // // Check if om_num is allowed, skip if not
-        // if (allowed_oms.find(om_num) == allowed_oms.end()) {
-        //     continue;
-        // }
-
         std::vector<short>& wave_k = wave->at(k);
         double baseline = calculate_baseline(wave_k);
         double chi2ndf = calculate_chi2ndf(wave_k, baseline);
+        eom = calculate_eom(wave_k, baseline);
 
-        // //print specific waveform
-        // if (event == 5 && om_num == 123 && chi2ndf < 3) {
-        //     PlotWaveform(event, om_num, wave_k);  // Save the waveform as a .png
-        // }
-        if (event == 0 && om_num == 123 && chi2ndf < 3) {
-            std::vector<short> reordered;
-            reordered.reserve(wave_k.size());
-            for (size_t i = 0; i < wave_k.size(); ++i) {
-                reordered.push_back(wave_k[get_cell(i, fcr->at(k))]);
-            }
-            PlotWaveform(event, om_num, reordered);  // plots reordered waveform
-        }
+        om_num_out = om_num;
+        baseline_out = baseline;
+        chi2ndf_out = chi2ndf;
+        event_num = event;
+        timestamp_out = timestamp->at(k)* 6.25e-9; // Convert to seconds;
 
-        // Only consider waveforms with chi2ndf < 3 and baseline > 3000
-        if (chi2ndf < 3 && baseline > 3000) {
-            // Update max baseline
-            if (baseline > max_baseline) {
-                max_baseline = baseline;
-            }
-
-            valid_om_nums.insert(om_num); // Store unique OM numbers with valid waveforms
-
-            // Fill histogram and output tree
-            baseline_hist->Fill(baseline);
-
-            om_num_out = om_num;
-            baseline_out = baseline;
-            chi2ndf_out = chi2ndf;
-            event_num = event;
-
-            baseline_tree->Fill();
-        }
+        baseline_tree->Fill();  //      }
 
     }
 }
 //output the number of entries to the terminal
 cout << "Max entries: " << max_entries << "\n";
-cout << "Max baseline: " << max_baseline << "\n";
-//cout << "Number of events with chi2ndf > 3: " << count_chi2ndf_gt3 << "\n";
-cout << "Number of unique OM numbers with valid waveforms: " << valid_om_nums.size() << "\n";
-
-// // Save histogram to a ROOT file
-// TFile *outfile = new TFile("baseline_output_all.root", "RECREATE");
-// baseline_hist->Write();
 
 // Write and close output
 baseline_tree->Write();
 outfile->Close();
 delete outfile;
-delete baseline_hist;
 
 file->Close();
 }
