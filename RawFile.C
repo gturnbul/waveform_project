@@ -53,6 +53,7 @@
 
 using namespace std;
 
+const short EMPTY_BIN = -1;
 //////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////  Functions //////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////
@@ -86,18 +87,28 @@ double calculate_timestamp_diff(int om_num, double current_timestamp) {
 }
 
 // Function to plot waveform
-void PlotWaveform(int event, int om_num, std::vector<short>& wave_k) {
+void PlotWaveform(int event, int om_num, const std::vector<short>& wave_k) {
     if (wave_k.empty()) {
         std::cout << "Warning: empty waveform for event " << event << " om_num " << om_num << std::endl;
-        return; // skip drawing empty waveform
+        return;
     }
 
     TCanvas *c1 = new TCanvas("c1", "Waveform", 800, 600);
-    TGraph *graph = new TGraph(wave_k.size());
+    TGraph *graph = new TGraph();
 
-    // Fill the TGraph with waveform data: x = index, y = ADC count
+    int point_index = 0;
     for (size_t i = 0; i < wave_k.size(); ++i) {
-        graph->SetPoint(i, i, wave_k[i]);
+        if (wave_k[i] != EMPTY_BIN) {  // skip empty bins
+            graph->SetPoint(point_index, i, wave_k[i]);
+            point_index++;
+        }
+    }
+
+    if (point_index == 0) {
+        std::cout << "Warning: waveform for event " << event << " om_num " << om_num << " contains only empty bins." << std::endl;
+        delete graph;
+        delete c1;
+        return;
     }
 
     graph->SetTitle(Form("Event %d - OM %d;Clock Ticks;ADC Counts", event, om_num));
@@ -105,12 +116,13 @@ void PlotWaveform(int event, int om_num, std::vector<short>& wave_k) {
     graph->SetLineColor(kBlue);
     graph->Draw("AL");
 
-    TString filename = Form("eom_elimination_run%d_event%d_om%d.png", 1143, event, om_num); // run number is 0, change if needed
+    TString filename = Form("reordered_run%d_event%d_om%d.png", 1143, event, om_num);
     c1->SaveAs(filename);
 
     delete graph;
     delete c1;
 }
+
 ////////////////////////////// FUNCTIONS from the WAVEFORMS ////////////////////////////////////
 // Function to calculate baseline
 double calculate_baseline(const std::vector<short>& waveform) {
@@ -132,17 +144,16 @@ double calculate_stddev(const std::vector<short>& waveform, double baseline) {
 
 // Function to calculate error on the mean (EOM), with sigma calculated inside
 double calculate_eom(const std::vector<short>& waveform, double baseline) {
-    int N = waveform.size();
     double sum_sq_diff = 0.0;
 
-    for (int i = 0; i < N; ++i) {
+    for (int i = 0; i < 976; ++i) {
         double diff = waveform[i] - baseline;
         sum_sq_diff += diff * diff;
     }
 
-    double variance = sum_sq_diff / N;      // Population variance
+    double variance = sum_sq_diff / 976;      // Population variance
     double sigma = std::sqrt(variance);     // Standard deviation
-    double eom = sigma / std::sqrt(N);      // Error on the mean
+    double eom = sigma / std::sqrt(976);      // Error on the mean
 
     return eom;
 }
@@ -154,33 +165,19 @@ int get_cell(int bin_no, int fcr) {
 }
 
 std::vector<short> reorder_waveform(const std::vector<short>& waveform, int fcr) {
-    std::vector<short> reordered(1024, -999);  // Use -999 as a null marker
+    std::vector<short> reordered(1024, EMPTY_BIN);  // initialize all bins as empty
 
-    int max_bins = std::min((int)waveform.size(), 976);  // eliminate end of waveform spike
+    int max_bins = std::min((int)waveform.size(), 976);  // only use bins 0 to 975
+
     for (int i = 0; i < max_bins; ++i) {
-        int reordered_index = get_cell(i, fcr);  // [0, 1023]
+        int reordered_index = get_cell(i, fcr);
         reordered[reordered_index] = waveform[i];
     }
 
-    return reordered;
-}
-// Clean and reorder the waveform
-std::vector<short> clean_and_reorder(const std::vector<short>& waveform, int fcr) {
-    std::vector<short> cleaned = waveform;
-
-    for (int i = 0; i < 48; ++i) {
-        cleaned[1024 - 48 + i] = cleaned[i];
-    }
-
-    std::vector<short> reordered;
-    reordered.reserve(1024);
-    for (int i = 0; i < 1024; ++i) {
-        reordered.push_back(cleaned[get_cell(i, fcr)]);
-    }
+    // bins 976 to 1023 remain EMPTY_BIN, indicating gaps
 
     return reordered;
 }
-
 
 
 //////////////////////////////////////////////////////////////////////////////////////
@@ -229,8 +226,6 @@ int event_num = -1;
 double eom = 0;
 double timestamp_out = 0;
 double timestamp_diff = -1;
-std::vector<int> tail_bin_indices;
-std::vector<double> tail_bin_distances;
 
 
 // Create branches in the output tree
@@ -241,14 +236,13 @@ baseline_tree->Branch("stddev", &stddev_out, "stddev/D");
 baseline_tree->Branch("eom", &eom, "eom/D");
 baseline_tree->Branch("timestamp", &timestamp_out, "timestamp/D");
 baseline_tree->Branch("timestamp_diff", &timestamp_diff, "timestamp_diff/D");
-baseline_tree->Branch("tail_bin_indices", &tail_bin_indices);
-baseline_tree->Branch("tail_bin_distances", &tail_bin_distances);
-
 
 
 // Create a histogram for the baseline distribution
 TH1D *baseline_hist = new TH1D("baseline_hist", "Baseline Distribution;Baseline [ADC];Entries", 100, 0, 4000);
 std::unordered_map<int, double> last_timestamp_per_om;
+static int plot_counter = 0;
+const int max_plots = 10;
 
 // loop over the entries in the tree
 for (int event = 0; event < max_entries; ++event) {
@@ -258,30 +252,19 @@ for (int event = 0; event < max_entries; ++event) {
         int om_num = calculate_om_num(calo_type, calo_side, calo_wall, calo_column, calo_row, k);
 
         std::vector<short>& wave_k = wave->at(k);
+        int fcr_k = fcr->at(k);
+
+        // Reorder waveform (this is just reordering, not preprocessing)
+        std::vector<short> r_waveform = reorder_waveform(wave_k, fcr_k); // or clean_and_reorder()
+
         double baseline = calculate_baseline(wave_k);
-
-        ///////////////////////////////////////////////////////////////////
-        tail_bin_indices.clear();
-        tail_bin_distances.clear();
-
-        int tail_start = 900;
-        int tail_end = std::min((int)wave_k.size(), 1024);  // safeguard
-
-        for (int i = tail_start; i < tail_end; ++i) {
-            tail_bin_indices.push_back(i);
-            tail_bin_distances.push_back(wave_k[i] - baseline);
-        }
-        ////////////////////////////////////////////////////////////////////
-
-
         double stddev = calculate_stddev(wave_k, baseline);
         eom = calculate_eom(wave_k, baseline);
 
-        if (eom >= 0.075 && eom <= 0.076) {
-            std::cout << "Event " << event << ", OM " << om_num << ", EOM = " << eom << std::endl;
-            PlotWaveform(event, om_num, wave_k);
+        if(plot_counter < max_plots) {
+            PlotWaveform(event, om_num, r_waveform);
+            plot_counter++;
         }
-    
 
         om_num_out = om_num;
         baseline_out = baseline;
