@@ -105,7 +105,7 @@ void PlotWaveform(int event, int om_num, std::vector<short>& wave_k) {
     graph->SetLineColor(kBlue);
     graph->Draw("AL");
 
-    TString filename = Form("waveform_reordered_run%d_event%d_om%d.png", 0, event, om_num); // run number is 0, change if needed
+    TString filename = Form("eom_elimination_run%d_event%d_om%d.png", 1143, event, om_num); // run number is 0, change if needed
     c1->SaveAs(filename);
 
     delete graph;
@@ -257,6 +257,12 @@ for (int event = 0; event < max_entries; ++event) {
         double stddev = calculate_stddev(wave_k, baseline);
         eom = calculate_eom(wave_k, baseline);
 
+        if (eom >= 0.075 && eom <= 0.076) {
+            std::cout << "Event " << event << ", OM " << om_num << ", EOM = " << eom << std::endl;
+            PlotWaveform(event, om_num, wave_k);
+        }
+    
+
         om_num_out = om_num;
         baseline_out = baseline;
         stddev_out = stddev;
@@ -278,4 +284,3 @@ delete outfile;
 
 file->Close();
 }
-
