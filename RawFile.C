@@ -229,6 +229,8 @@ int event_num = -1;
 double eom = 0;
 double timestamp_out = 0;
 double timestamp_diff = -1;
+std::vector<int> tail_bin_indices;
+std::vector<double> tail_bin_distances;
 
 
 // Create branches in the output tree
@@ -239,6 +241,9 @@ baseline_tree->Branch("stddev", &stddev_out, "stddev/D");
 baseline_tree->Branch("eom", &eom, "eom/D");
 baseline_tree->Branch("timestamp", &timestamp_out, "timestamp/D");
 baseline_tree->Branch("timestamp_diff", &timestamp_diff, "timestamp_diff/D");
+baseline_tree->Branch("tail_bin_indices", &tail_bin_indices);
+baseline_tree->Branch("tail_bin_distances", &tail_bin_distances);
+
 
 
 // Create a histogram for the baseline distribution
@@ -254,6 +259,21 @@ for (int event = 0; event < max_entries; ++event) {
 
         std::vector<short>& wave_k = wave->at(k);
         double baseline = calculate_baseline(wave_k);
+
+        ///////////////////////////////////////////////////////////////////
+        tail_bin_indices.clear();
+        tail_bin_distances.clear();
+
+        int tail_start = 900;
+        int tail_end = std::min((int)wave_k.size(), 1024);  // safeguard
+
+        for (int i = tail_start; i < tail_end; ++i) {
+            tail_bin_indices.push_back(i);
+            tail_bin_distances.push_back(wave_k[i] - baseline);
+        }
+        ////////////////////////////////////////////////////////////////////
+
+
         double stddev = calculate_stddev(wave_k, baseline);
         eom = calculate_eom(wave_k, baseline);
 
