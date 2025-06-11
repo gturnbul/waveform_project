@@ -239,8 +239,15 @@ int main(){
     TH1D *baseline_hist = new TH1D("baseline_hist", "Baseline Distribution;Baseline [ADC];Entries", 100, 0, 4000);
     std::unordered_map<int, double> last_timestamp_per_om;
 
+    // vectors for printing end of waveform spike information
+    std::vector<double> stddevs;
+    std::vector<int> bin_numbers;
+    std::vector<double> red_chi2;
+    std::vector<double> g_mean;
+
+
     //////////////////////////////////////////////////////////////////////////
-    // Pass 1: Determine min/max ADC values for OM 370 bins
+    // Pass 1: Determine min/max ADC values for OM 152 bins
     std::map<int, short> min_adc_per_bin;
     std::map<int, short> max_adc_per_bin;
 
@@ -249,21 +256,46 @@ int main(){
         max_adc_per_bin[bin] = std::numeric_limits<short>::min();
     }
 
+    // Overlay plot of all OM152 waveforms (all bins of each event)
+    TCanvas* c_overlay = new TCanvas("c_overlay", "OM152 Overlay Waveforms", 1000, 600);
+
+    TMultiGraph* mg = new TMultiGraph();
+    mg->SetTitle("OM152 Waveforms Overlay;Bin Number;ADC Value");
+
+
     for (int event = 0; event < max_entries; ++event) {
         tree->GetEntry(event);
+
         for (int k = 0; k < calo_nohits; ++k) {
             int om_num = calculate_om_num(calo_type, calo_side, calo_wall, calo_column, calo_row, k);
             std::vector<short>& wave_k = wave->at(k);
 
-            if (om_num == 370 && wave_k.size() > 1023) {
+            if (om_num == 152 && wave_k.size() > 1023) {
                 for (int bin = 950; bin <= 1023; ++bin) {
                     short adc = wave_k[bin];
                     if (adc < min_adc_per_bin[bin]) min_adc_per_bin[bin] = adc;
                     if (adc > max_adc_per_bin[bin]) max_adc_per_bin[bin] = adc;
                 }
+                // Create TGraph for overlay
+                int n_bins = wave_k.size();
+                TGraph* gr = new TGraph(n_bins-950);
+                for (int bin = 950; bin < n_bins; ++bin) {
+                    gr->SetPoint(bin-950, bin, wave_k[bin]);
+                }
+                gr->SetLineColorAlpha(kBlue, 0.1);  // semi-transparent blue
+                gr->SetLineWidth(1);
+                mg->Add(gr);
             }
         }
     }
+    // Now draw and save overlay plot
+    mg->Draw("AL");  // Draw axes + all graphs
+    c_overlay->Update();
+    c_overlay->SaveAs("om152_overlay.png");
+
+    // You can delete mg and c_overlay here if no longer needed
+    delete mg;
+    delete c_overlay;
 
     //////////////////////////////////////////////////////////////////////////
     // Allocate histograms using dynamic ranges
@@ -272,8 +304,8 @@ int main(){
         short min_adc = min_adc_per_bin[bin] - 5;  // padding
         short max_adc = max_adc_per_bin[bin] + 5;
 
-        TString hist_name = Form("om370_bin%d", bin);
-        TString hist_title = Form("OM 370 - Bin %d;ADC Value;Counts", bin);
+        TString hist_name = Form("om152_bin%d", bin);
+        TString hist_title = Form("OM 152 - Bin %d;ADC Value;Counts", bin);
         bin_histograms[bin] = new TH1D(hist_name, hist_title, 100, min_adc, max_adc);
     }
 
@@ -291,7 +323,7 @@ int main(){
             double stddev = calculate_stddev(wave_k, baseline);
             eom = calculate_eom(wave_k, baseline);
 
-            if (om_num == 370 && wave_k.size() > 1023) {
+            if (om_num == 152 && wave_k.size() > 1023) {
                 for (int bin = 950; bin <= 1023; ++bin) {
                     bin_histograms[bin]->Fill(wave_k[bin]);
                 }
@@ -330,6 +362,13 @@ int main(){
                 double chi2 = fit_func->GetChisquare();
                 int ndf = fit_func->GetNDF();
                 double chi2_ndf = chi2 / ndf;
+                double sigma = fit_func->GetParameter(2);
+                double mean = fit_func->GetParameter(1);
+
+                stddevs.push_back(sigma);
+                bin_numbers.push_back(bin);
+                red_chi2.push_back(chi2_ndf);
+                g_mean.push_back(mean);
 
                 TPaveText* pave = new TPaveText(0.6, 0.75, 0.88, 0.85, "NDC");
                 pave->SetFillColor(0);
@@ -343,13 +382,74 @@ int main(){
                           << ", chi2/NDF = " << chi2_ndf << std::endl;
             }
 
-            TString outname = Form("om370_bin%d_fit.png", bin);
+            TString outname = Form("om152_bin%d_fit.png", bin);
             c_fit->SaveAs(outname);
         }
 
         delete hist;  // clean up memory
     }
     delete c_fit;
+
+    // Plot standard deviation per bin
+    TCanvas* c_stddev = new TCanvas("c_stddev", "StdDev per Bin", 800, 600);
+    TGraph* gr_stddev = new TGraph(bin_numbers.size());
+
+    for (size_t i = 0; i < bin_numbers.size(); ++i) {
+        gr_stddev->SetPoint(i, bin_numbers[i], stddevs[i]);
+    }
+
+    gr_stddev->SetTitle("Standard Deviation from Gaussian Fit;Bin Number;#sigma [ADC]");
+    gr_stddev->SetMarkerStyle(21);
+    gr_stddev->SetLineColor(kRed);
+    gr_stddev->SetLineWidth(2);
+    gr_stddev->Draw("ALP");
+
+    c_stddev->SaveAs("om152_stddev_per_bin.png");
+
+    delete gr_stddev;
+    delete c_stddev;
+
+    // Plot reduced chi-squared per bin
+    TCanvas* c_chi2 = new TCanvas("c_chi2", "Reduced Chi2 per Bin", 800, 600);
+    TGraph* gr_chi2 = new TGraph(bin_numbers.size());
+
+    for (size_t i = 0; i < bin_numbers.size(); ++i) {
+        gr_chi2->SetPoint(i, bin_numbers[i], red_chi2[i]);
+    }
+
+    gr_chi2->SetTitle("Reduced #chi^{2} from Gaussian Fit;Bin Number;#chi^{2}/ndf");
+    gr_chi2->SetMarkerStyle(22);
+    gr_chi2->SetLineColor(kBlue + 2);
+    gr_chi2->SetLineWidth(2);
+    gr_chi2->Draw("ALP");
+
+    c_chi2->SaveAs("om152_reduced_chi2_per_bin.png");
+
+    // Clean up
+    delete gr_chi2;
+    delete c_chi2;
+
+
+    // Plot reduced mean per bin
+    TCanvas* c_mean = new TCanvas("c_mean", "Mean per Bin", 800, 600);
+    TGraph* gr_mean = new TGraph(bin_numbers.size());
+
+    for (size_t i = 0; i < bin_numbers.size(); ++i) {
+        gr_mean->SetPoint(i, bin_numbers[i], g_mean[i]);
+    }
+
+    gr_mean->SetTitle("Mean from Gaussian Fit;Bin Number;Mean [ADC]");
+    gr_mean->SetMarkerStyle(22);
+    gr_mean->SetLineColor(kGreen + 2);
+    gr_mean->SetLineWidth(2);
+    gr_mean->Draw("ALP");
+
+    c_mean->SaveAs("om152_mean_per_bin.png");
+
+    delete gr_mean;
+    delete c_mean;
+
+
 
     //////////////////////////////////////////////////////////////////////////
     // Write and close output
