@@ -185,105 +185,177 @@ std::vector<short> reorder_waveform(const std::vector<short>& waveform, int fcr)
 //////////////////////////////////////////////////////////////////////////////////////
 int main(){
     // Open the ROOT file
-TFile *file = new TFile("snemo_run-1143_udd.root", "READ");
-TTree *tree = (TTree *)file->Get("SimData");
+    TFile *file = new TFile("snemo_run-1143_udd.root", "READ");
+    TTree *tree = (TTree *)file->Get("SimData");
 
-// Variables for branches
-std::vector<std::vector<short>> *wave = nullptr;
-std::vector<int> *calo_wall = nullptr;
-std::vector<int> *calo_side = nullptr;
-std::vector<int> *calo_column = nullptr;
-std::vector<int> *calo_row = nullptr;
-std::vector<int> *calo_type = nullptr;
-std::vector<int> *fcr = nullptr;
-std::vector<int> *timestamp = nullptr;
-int calo_nohits = 0;
+    // Variables for branches
+    std::vector<std::vector<short>> *wave = nullptr;
+    std::vector<int> *calo_wall = nullptr;
+    std::vector<int> *calo_side = nullptr;
+    std::vector<int> *calo_column = nullptr;
+    std::vector<int> *calo_row = nullptr;
+    std::vector<int> *calo_type = nullptr;
+    std::vector<int> *fcr = nullptr;
+    std::vector<int> *timestamp = nullptr;
+    int calo_nohits = 0;
 
-// Set branch addresses
-tree->SetBranchAddress("digicalo.nohits", &calo_nohits);
-tree->SetBranchAddress("digicalo.waveform", &wave);
-tree->SetBranchAddress("digicalo.wall", &calo_wall);
-tree->SetBranchAddress("digicalo.side", &calo_side);
-tree->SetBranchAddress("digicalo.column", &calo_column);
-tree->SetBranchAddress("digicalo.row", &calo_row);
-tree->SetBranchAddress("digicalo.type", &calo_type);
-tree->SetBranchAddress("digicalo.fcr", &fcr);
-tree->SetBranchAddress("digicalo.timestamp", &timestamp);
+    // Set branch addresses
+    tree->SetBranchAddress("digicalo.nohits", &calo_nohits);
+    tree->SetBranchAddress("digicalo.waveform", &wave);
+    tree->SetBranchAddress("digicalo.wall", &calo_wall);
+    tree->SetBranchAddress("digicalo.side", &calo_side);
+    tree->SetBranchAddress("digicalo.column", &calo_column);
+    tree->SetBranchAddress("digicalo.row", &calo_row);
+    tree->SetBranchAddress("digicalo.type", &calo_type);
+    tree->SetBranchAddress("digicalo.fcr", &fcr);
+    tree->SetBranchAddress("digicalo.timestamp", &timestamp);
 
-// Get the number of entries in the tree
-int max_entries = tree->GetEntries();
+    // Get the number of entries in the tree
+    int max_entries = tree->GetEntries();
 
-// Create output ROOT file and TTree for baseline data
-TFile *outfile = new TFile("baseline_output_tree1143.root", "RECREATE");
-TTree *baseline_tree = new TTree("baseline_tree", "OM baseline data");
+    // Create output ROOT file and TTree for baseline data
+    TFile *outfile = new TFile("baseline_output_tree1143.root", "RECREATE");
+    TTree *baseline_tree = new TTree("baseline_tree", "OM baseline data");
 
+    // Initialise output variables
+    int om_num_out = -1;
+    double baseline_out = 0;
+    double stddev_out = 0;
+    int event_num = -1;
+    double eom = 0;
+    double timestamp_out = 0;
+    double timestamp_diff = -1;
 
-// initialise output variables
-int om_num_out = -1;
-double baseline_out = 0;
-double stddev_out = 0;
-int event_num = -1;
-double eom = 0;
-double timestamp_out = 0;
-double timestamp_diff = -1;
+    // Create branches in the output tree
+    baseline_tree->Branch("event_num", &event_num, "event_num/I");
+    baseline_tree->Branch("om_num", &om_num_out, "om_num/I");
+    baseline_tree->Branch("baseline", &baseline_out, "baseline/D");
+    baseline_tree->Branch("stddev", &stddev_out, "stddev/D");
+    baseline_tree->Branch("eom", &eom, "eom/D");
+    baseline_tree->Branch("timestamp", &timestamp_out, "timestamp/D");
+    baseline_tree->Branch("timestamp_diff", &timestamp_diff, "timestamp_diff/D");
 
+    // Create a histogram for the baseline distribution
+    TH1D *baseline_hist = new TH1D("baseline_hist", "Baseline Distribution;Baseline [ADC];Entries", 100, 0, 4000);
+    std::unordered_map<int, double> last_timestamp_per_om;
 
-// Create branches in the output tree
-baseline_tree->Branch("event_num", &event_num, "event_num/I");
-baseline_tree->Branch("om_num", &om_num_out, "om_num/I");
-baseline_tree->Branch("baseline", &baseline_out, "baseline/D");
-baseline_tree->Branch("stddev", &stddev_out, "stddev/D");
-baseline_tree->Branch("eom", &eom, "eom/D");
-baseline_tree->Branch("timestamp", &timestamp_out, "timestamp/D");
-baseline_tree->Branch("timestamp_diff", &timestamp_diff, "timestamp_diff/D");
+    //////////////////////////////////////////////////////////////////////////
+    // Pass 1: Determine min/max ADC values for OM 370 bins
+    std::map<int, short> min_adc_per_bin;
+    std::map<int, short> max_adc_per_bin;
 
+    for (int bin = 950; bin <= 1023; ++bin) {
+        min_adc_per_bin[bin] = std::numeric_limits<short>::max();
+        max_adc_per_bin[bin] = std::numeric_limits<short>::min();
+    }
 
-// Create a histogram for the baseline distribution
-TH1D *baseline_hist = new TH1D("baseline_hist", "Baseline Distribution;Baseline [ADC];Entries", 100, 0, 4000);
-std::unordered_map<int, double> last_timestamp_per_om;
-static int plot_counter = 0;
-const int max_plots = 10;
+    for (int event = 0; event < max_entries; ++event) {
+        tree->GetEntry(event);
+        for (int k = 0; k < calo_nohits; ++k) {
+            int om_num = calculate_om_num(calo_type, calo_side, calo_wall, calo_column, calo_row, k);
+            std::vector<short>& wave_k = wave->at(k);
 
-// loop over the entries in the tree
-for (int event = 0; event < max_entries; ++event) {
-    tree->GetEntry(event);
+            if (om_num == 370 && wave_k.size() > 1023) {
+                for (int bin = 950; bin <= 1023; ++bin) {
+                    short adc = wave_k[bin];
+                    if (adc < min_adc_per_bin[bin]) min_adc_per_bin[bin] = adc;
+                    if (adc > max_adc_per_bin[bin]) max_adc_per_bin[bin] = adc;
+                }
+            }
+        }
+    }
 
-    for (int k = 0; k < calo_nohits; ++k) {
-        int om_num = calculate_om_num(calo_type, calo_side, calo_wall, calo_column, calo_row, k);
+    //////////////////////////////////////////////////////////////////////////
+    // Allocate histograms using dynamic ranges
+    std::map<int, TH1D*> bin_histograms;
+    for (int bin = 950; bin <= 1023; ++bin) {
+        short min_adc = min_adc_per_bin[bin] - 5;  // padding
+        short max_adc = max_adc_per_bin[bin] + 5;
 
-        std::vector<short>& wave_k = wave->at(k);
-        int fcr_k = fcr->at(k);
+        TString hist_name = Form("om370_bin%d", bin);
+        TString hist_title = Form("OM 370 - Bin %d;ADC Value;Counts", bin);
+        bin_histograms[bin] = new TH1D(hist_name, hist_title, 100, min_adc, max_adc);
+    }
 
-        // Reorder waveform (this is just reordering, not preprocessing)
-        std::vector<short> r_waveform = reorder_waveform(wave_k, fcr_k); // or clean_and_reorder()
+    //////////////////////////////////////////////////////////////////////////
+    // Pass 2: Fill baseline tree and histograms
+    for (int event = 0; event < max_entries; ++event) {
+        tree->GetEntry(event);
+        for (int k = 0; k < calo_nohits; ++k) {
+            int om_num = calculate_om_num(calo_type, calo_side, calo_wall, calo_column, calo_row, k);
+            std::vector<short>& wave_k = wave->at(k);
+            int fcr_k = fcr->at(k);
 
-        double baseline = calculate_baseline(wave_k);
-        double stddev = calculate_stddev(wave_k, baseline);
-        eom = calculate_eom(wave_k, baseline);
+            std::vector<short> r_waveform = reorder_waveform(wave_k, fcr_k);
+            double baseline = calculate_baseline(wave_k);
+            double stddev = calculate_stddev(wave_k, baseline);
+            eom = calculate_eom(wave_k, baseline);
 
-        if(plot_counter < max_plots) {
-            PlotWaveform(event, om_num, r_waveform);
-            plot_counter++;
+            if (om_num == 370 && wave_k.size() > 1023) {
+                for (int bin = 950; bin <= 1023; ++bin) {
+                    bin_histograms[bin]->Fill(wave_k[bin]);
+                }
+            }
+
+            om_num_out = om_num;
+            baseline_out = baseline;
+            stddev_out = stddev;
+            event_num = event;
+            timestamp_out = timestamp->at(k) * 6.25e-9;
+            timestamp_diff = calculate_timestamp_diff(om_num, timestamp_out);
+
+            baseline_tree->Fill();  
+        }
+    }
+
+    // Output the number of entries to the terminal
+    cout << "Max entries: " << max_entries << "\n";
+
+    //////////////////////////////////////////////////////////////////////////
+    // Fit and draw each histogram
+    TCanvas *c_fit = new TCanvas("c_fit", "Fits", 800, 600);
+    for (int bin = 950; bin <= 1023; ++bin) {
+        TH1D* hist = bin_histograms[bin];
+        if (hist->GetEntries() > 10) {
+            double xmin = hist->GetXaxis()->GetXmin();
+            double xmax = hist->GetXaxis()->GetXmax();
+
+            hist->Fit("gaus", "Q", "", xmin, xmax);
+            hist->Draw();
+            hist->GetFunction("gaus")->SetLineColor(kRed);
+            hist->GetFunction("gaus")->SetLineWidth(2);
+
+            TF1* fit_func = hist->GetFunction("gaus");
+            if (fit_func) {
+                double chi2 = fit_func->GetChisquare();
+                int ndf = fit_func->GetNDF();
+                double chi2_ndf = chi2 / ndf;
+
+                TPaveText* pave = new TPaveText(0.6, 0.75, 0.88, 0.85, "NDC");
+                pave->SetFillColor(0);
+                pave->SetBorderSize(1);
+                pave->AddText(Form("#chi^{2}/NDF = %.2f", chi2_ndf));
+                pave->Draw();
+
+                std::cout << "Bin " << bin
+                          << ": chi2 = " << chi2
+                          << ", NDF = " << ndf
+                          << ", chi2/NDF = " << chi2_ndf << std::endl;
+            }
+
+            TString outname = Form("om370_bin%d_fit.png", bin);
+            c_fit->SaveAs(outname);
         }
 
-        om_num_out = om_num;
-        baseline_out = baseline;
-        stddev_out = stddev;
-        event_num = event;
-        timestamp_out = timestamp->at(k)* 6.25e-9; // Convert to seconds;
-        timestamp_diff = calculate_timestamp_diff(om_num, timestamp_out);
+        delete hist;  // clean up memory
+    }
+    delete c_fit;
 
-        baseline_tree->Fill();  
-
-        }
+    //////////////////////////////////////////////////////////////////////////
+    // Write and close output
+    baseline_tree->Write();
+    outfile->Close();
+    delete outfile;
+    file->Close();
 }
-//output the number of entries to the terminal
-cout << "Max entries: " << max_entries << "\n";
 
-// Write and close output
-baseline_tree->Write();
-outfile->Close();
-delete outfile;
-
-file->Close();
-}
