@@ -47,16 +47,12 @@
 // Additional ROOT Utilities
 #include <TPaveText.h>
 #include <TArrayF.h>
+#include <unordered_map> 
 
 // Macro Definition
 #define _USE_MATH_DEFINES
 
 using namespace std;
-#include "TSystem.h"
-bool overlayWritten = false;
-void dbg(const char* msg) { std::cout << msg << std::endl; }
-
-
 
 const short EMPTY_BIN = -1;
 //////////////////////////////////////////////////////////////////////////////////////
@@ -127,55 +123,7 @@ void PlotWaveform(int event, int om_num, const std::vector<short>& wave_k) {
     delete graph;
     delete c1;
 }
-// Function to plot overlayed waveform
-void PlotOverlayWaveform(int event, int om_num,
-                         const std::vector<short>& reordered)
-{
-    static const int GROUP_SIZE = 16;      // cells per overlay
-    static const int GROUPS     = 4;       // 0‑15, 16‑31, 32‑47, 48‑63
-    static const Color_t COLORS[GROUPS] =
-        { kRed+1, kBlue+1, kGreen+2, kMagenta+1 };
 
-    // Guard: make sure we *have* those memory cells
-    if (reordered.size() < GROUP_SIZE * GROUPS) {
-        std::cerr << "Waveform too short for overlay\n";
-        return;
-    }
-
-    TCanvas    *c  = new TCanvas("c_overlay","Overlayed waveform",800,600);
-    TMultiGraph mg;
-
-    for (int g = 0; g < GROUPS; ++g) {
-        std::unique_ptr<TGraph> gr(new TGraph());
-        gr->SetLineColor(COLORS[g]);
-        gr->SetLineWidth(2);
-
-        for (int i = 0; i < GROUP_SIZE; ++i) {
-            int cell = g * GROUP_SIZE + i;        // absolute mem‑cell index
-            if (reordered[cell] != EMPTY_BIN) {
-                gr->SetPoint(gr->GetN(), i, reordered[cell]); // x = 0‑15
-            }
-        }
-        mg.Add(gr.release()); // TMultiGraph now owns the graph
-    }
-
-    mg.SetTitle(Form("Event %d - OM %d;Memory-cell index (0-15);ADC counts",
-                     event, om_num));
-    mg.Draw("AL");
-
-    // Simple legend so you know which colour is which block
-    const char *labels[GROUPS] = { "cells 0-15",
-                                   "cells 16-31",
-                                   "cells 32-47",
-                                   "cells 48-63" };
-    TLegend leg(0.70,0.70,0.90,0.88);
-    for (int g = 0; g < GROUPS; ++g)
-        leg.AddEntry(mg.GetListOfGraphs()->At(g), labels[g], "l");
-    leg.Draw();
-
-    c->SaveAs(Form("mem_cell_overlay_event%d_om%d.png", event, om_num));
-    delete c; // graphs are owned by mg/canvas and get cleaned up
-}
 ////////////////////////////// FUNCTIONS from the WAVEFORMS ////////////////////////////////////
 // Function to calculate baseline
 double calculate_baseline(const std::vector<short>& waveform) {
@@ -232,13 +180,61 @@ std::vector<short> reorder_waveform(const std::vector<short>& waveform, int fcr)
     return reordered;
 }
 
+// Function to plot overlayed waveform
+void PlotOverlayWaveform(int event, int om_num,
+                         const std::vector<short>& reordered)
+{
+    static const int GROUP_SIZE = 16;      // cells per overlay
+    static const int GROUPS     = 4;       // 0‑15, 16‑31, 32‑47, 48‑63
+    static const Color_t COLORS[GROUPS] =
+        { kRed+1, kBlue+1, kGreen+2, kMagenta+1 };
+
+    // Guard: make sure we *have* those memory cells
+    if (reordered.size() < GROUP_SIZE * GROUPS) {
+        std::cerr << "Waveform too short for overlay\n";
+        return;
+    }
+
+    TCanvas    *c  = new TCanvas("c_overlay","Overlayed waveform",800,600);
+    TMultiGraph mg;
+
+    for (int g = 0; g < GROUPS; ++g) {
+        std::unique_ptr<TGraph> gr(new TGraph());
+        gr->SetLineColor(COLORS[g]);
+        gr->SetLineWidth(2);
+
+        for (int i = 0; i < GROUP_SIZE; ++i) {
+            int cell = g * GROUP_SIZE + i;        // absolute mem‑cell index
+            if (reordered[cell] != EMPTY_BIN) {
+                gr->SetPoint(gr->GetN(), i, reordered[cell]); // x = 0‑15
+            }
+        }
+        mg.Add(gr.release()); // TMultiGraph now owns the graph
+    }
+
+    mg.SetTitle(Form("Event %d - OM %d;Memory-cell index (0-15);ADC counts",
+                     event, om_num));
+    mg.Draw("AL");
+
+    // Simple legend so you know which colour is which block
+    const char *labels[GROUPS] = { "cells 0-15",
+                                   "cells 16-31",
+                                   "cells 32-47",
+                                   "cells 48-63" };
+    TLegend leg(0.70,0.70,0.90,0.88);
+    for (int g = 0; g < GROUPS; ++g)
+        leg.AddEntry(mg.GetListOfGraphs()->At(g), labels[g], "l");
+    leg.Draw();
+
+    c->SaveAs(Form("mem_cell_overlay_event%d_om%d.png", event, om_num));
+    delete c; // graphs are owned by mg/canvas and get cleaned up
+}
 
 //////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////  Main ///////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////
 int main(){
-gROOT->SetBatch(kTRUE);   // write canvases without opening X‑windows
-// Open the ROOT file
+    // Open the ROOT file
 TFile *file = new TFile("snemo_run-1143_udd.root", "READ");
 TTree *tree = (TTree *)file->Get("SimData");
 
@@ -296,9 +292,16 @@ baseline_tree->Branch("timestamp_diff", &timestamp_diff, "timestamp_diff/D");
 TH1D *baseline_hist = new TH1D("baseline_hist", "Baseline Distribution;Baseline [ADC];Entries", 100, 0, 4000);
 std::unordered_map<int, double> last_timestamp_per_om;
 
-const int  TARGET_EVENT = 25;  // <‑‑ pick an event ≥ 9
-const int  TARGET_OM     = 428; // your OM of interest
+/////////////////////////////////////////////////////////////////////////////////////////////////
+const int  TARGET_OM         = 370;
+const double MAX_EOM_ALLOWED = 0.076;
 
+// Maps to hold min and max ADC values per memory cell
+std::vector<short> min_adc_per_cell(1024, std::numeric_limits<short>::max());
+std::vector<short> max_adc_per_cell(1024, std::numeric_limits<short>::min());
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+// Pass 1 - to establish limits for the histograms
 // loop over the entries in the tree
 for (int event = 0; event < max_entries; ++event) {
     tree->GetEntry(event);
@@ -315,32 +318,74 @@ for (int event = 0; event < max_entries; ++event) {
         double baseline = calculate_baseline(wave_k);
         double stddev = calculate_stddev(wave_k, baseline);
         eom = calculate_eom(wave_k, baseline);
+        
+        if (event < 9) continue; // Skip the first 9 events
+        if (eom >= MAX_EOM_ALLOWED) continue; // Skip events with high EOM
+        if (om_num != TARGET_OM) continue; // Only process the target OM
 
-        ///////////////////////////////////////////////////////////////////////////////////////
-        if (event == TARGET_EVENT && om_num == TARGET_OM) {
-            if (!overlayWritten && event == TARGET_EVENT && om_num == TARGET_OM) {
-                dbg("→ Found candidate hit");
-                PlotOverlayWaveform(event, om_num, r_waveform);
-
-                TString fname = Form("mem_cell_overlay_event%d_om%d.png",
-                                    event, om_num);
-                if (!gSystem->AccessPathName(fname)) {
-                    dbg(("✓ PNG written: " + std::string(fname)).c_str());
-                } else {
-                    dbg(("⚠️  Tried to write " + std::string(fname) + " but it is NOT on disk").c_str());
+        for (int cell = 0; cell < 1024; ++cell) {
+            short adc = r_waveform[cell];
+            if(adc != EMPTY_BIN) {
+                // update the min and max values
+                if(adc< min_adc_per_cell[cell]) min_adc_per_cell[cell] = adc;
+                if(adc > max_adc_per_cell[cell]) max_adc_per_cell[cell] = adc;
                 }
-                overlayWritten = true;            // don’t try again
+            }  
+        }
+    }
+
+
+    std::vector<TH1D*> cellHists;
+
+    // Create histograms for each memory cell
+
+    cellHists.clear();
+    cellHists.reserve(1024); // Reserve space for 1024 histograms
+
+    for (int cell = 0; cell < 1024; ++cell) {
+        short min_adc = min_adc_per_cell[cell];
+        short max_adc = max_adc_per_cell[cell];
+    
+
+    //add some padding
+    min_adc = std::max<short>(0, min_adc - 5.0); // Ensure minimum ADC is not negative
+    max_adc = std::min<short>(max_adc + 5,4000.0); // Ensure maximum ADC does not exceed limits
+
+    int n_bins = max_adc-min_adc +1; // Number of bins in the histogram
+
+    TString hname = Form("h_cell_%03d", cell);
+    TString htitle = Form("OM %d - memory cell %d;ADC Value:Entries", TARGET_OM, cell);
+
+    cellHists.emplace_back(new TH1D(hname, htitle, n_bins, min_adc, max_adc));
+    }
+
+    // Pass 2 - Fill the histograms with actual data
+
+    for(int event = 0; event < max_entries; ++event) {
+       tree->GetEntry(event);
+
+        for (int k = 0; k < calo_nohits; ++k) {
+            int om_num = calculate_om_num(calo_type, calo_side, calo_wall, calo_column, calo_row, k);
+
+            std::vector<short>& wave_k = wave->at(k);
+            int fcr_k = fcr->at(k);
+
+            // Reorder waveform
+            std::vector<short> r_waveform = reorder_waveform(wave_k, fcr_k); // or clean_and_reorder()
+
+            double baseline = calculate_baseline(wave_k);
+            double stddev = calculate_stddev(wave_k, baseline);
+            eom = calculate_eom(wave_k, baseline);
+
+            if (event > 9 && om_num == TARGET_OM && eom <= MAX_EOM_ALLOWED) {
+            for (int cell = 0; cell < 1024; ++cell) {
+                if (r_waveform[cell] != EMPTY_BIN) {
+                    cellHists[cell]->Fill(r_waveform[cell]);
+                }
             }
-
-            PlotOverlayWaveform(event, om_num, r_waveform);
-        }
-        if (!overlayWritten) {
-            std::cout << "⚠️  No hit on OM " << TARGET_OM 
-                    << " found in event " << TARGET_EVENT 
-                    << " (or waveform empty)" << std::endl;
         }
 
-        ///////////////////////////////////////////////////////////////////////////////////////
+        // Fill the baseline tree
         om_num_out = om_num;
         baseline_out = baseline;
         stddev_out = stddev;
@@ -351,14 +396,34 @@ for (int event = 0; event < max_entries; ++event) {
         baseline_tree->Fill();  
 
         }
-}
-//output the number of entries to the terminal
-cout << "Max entries: " << max_entries << "\n";
+        // After all events processed
+        for (int cell = 0; cell < 1024; ++cell) {
+            if (cellHists[cell]->GetEntries() > 10) {
+                cellHists[cell]->Fit("gaus", "Q");
+                TF1* fitFunc = cellHists[cell]->GetFunction("gaus");
+                if (fitFunc) {
+                    double mean = fitFunc->GetParameter(1);
+                    double sigma = fitFunc->GetParameter(2);
+                }
+            }
+        }
+    }
 
-// Write and close output
-baseline_tree->Write();
-outfile->Close();
-delete outfile;
+    //output the number of entries to the terminal
+    cout << "Max entries: " << max_entries << "\n";
+    // Save each histogram as PNG to the folder "mem_cell_histograms"
+    for (int cell = 0; cell < 1024; ++cell) {
+        TString filename = Form("mem_cell_histograms/h_cell_%03d.png", cell);
+        TCanvas c;  // Create a temporary canvas
+        //c.SetLogy(); // Set log scale for better visibility
+        cellHists[cell]->Draw();
+        c.SaveAs(filename);
+    }
+    // Write and close output
+    baseline_tree->Write();
+    outfile->Close();
+    delete outfile;
 
-file->Close();
+    file->Close();
+    return 0;
 }
