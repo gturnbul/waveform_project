@@ -184,6 +184,8 @@ std::vector<short> reorder_waveform(const std::vector<short>& waveform, int fcr)
 ////////////////////////////////  Main ///////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////
 int main(){
+    //oms to analyse
+    std::vector<int> om_list = {37,39,47,66,107,112,131,168,170,173,181,184,214,217,229,250,258,262,266,269,270,292,311,335,363,386,389,391,402,408,446,455,458,476,482,485,511,523,524,527,528,531,540,542,542,555,559,573,580,596,614,617,625,633,638,640,672,685,688,695};          // OMs to analyse
     // Open the ROOT file
     TFile *file = new TFile("snemo_run-1143_udd.root", "READ");
     TTree *tree = (TTree *)file->Get("SimData");
@@ -212,6 +214,12 @@ int main(){
 
     // Get the number of entries in the tree
     int max_entries = tree->GetEntries();
+
+    // *** containers keyed by OM ***
+    std::unordered_map<int,TCanvas*>     c_overlay;
+    std::unordered_map<int,TMultiGraph*> mg_overlay;
+    std::map<std::pair<int,int>,short>   adc_min, adc_max; // (om,bin)->min/max
+    std::map<std::pair<int,int>,TH1D*>   h_bin;            // (om,bin)->hist
 
     // Create output ROOT file and TTree for baseline data
     TFile *outfile = new TFile("baseline_output_tree1143.root", "RECREATE");
@@ -247,184 +255,122 @@ int main(){
 
 
     //////////////////////////////////////////////////////////////////////////
-    // Pass 1: Determine min/max ADC values for OM 530 bins
-    std::map<int, short> min_adc_per_bin;
-    std::map<int, short> max_adc_per_bin;
+    for (int target_om : om_list)
+    {
+        // -------- Pass‑1 : overlay graph + min/max ADC for THIS OM -----
+        std::map<int, short> min_adc_per_bin, max_adc_per_bin;
+        for (int bin = 950; bin <= 1023; ++bin) {
+            min_adc_per_bin[bin] =  std::numeric_limits<short>::max();
+            max_adc_per_bin[bin] = -std::numeric_limits<short>::max();
+        }
 
-    for (int bin = 950; bin <= 1023; ++bin) {
-        min_adc_per_bin[bin] = std::numeric_limits<short>::max();
-        max_adc_per_bin[bin] = std::numeric_limits<short>::min();
-    }
+        TString cv_name  = Form("c_overlay_om%d", target_om);
+        TString cv_title = Form("OM%d Overlay Waveforms", target_om);
+        TCanvas*     c_overlay = new TCanvas(cv_name, cv_title, 1000, 600);
 
-    // Overlay plot of all OM530 waveforms (all bins of each event)
-    TCanvas* c_overlay = new TCanvas("c_overlay", "OM530 Overlay Waveforms", 1000, 600);
+        TMultiGraph* mg = new TMultiGraph();
+        mg->SetTitle(Form("OM%d Waveforms Overlay;Bin Number;ADC Value", target_om));
 
-    TMultiGraph* mg = new TMultiGraph();
-    mg->SetTitle("OM530 Waveforms Overlay;Bin Number;ADC Value");
+        for (int event = 10; event < max_entries; ++event) {  //set from 10 to skip first 9 events
+            tree->GetEntry(event);
+            for (int k = 0; k < calo_nohits; ++k) {
+                int om_num = calculate_om_num(calo_type, calo_side, calo_wall,
+                                            calo_column, calo_row, k);
+                if (om_num != target_om) continue;
 
+                const std::vector<short>& wave_k = wave->at(k);
+                if (wave_k.size() <= 1023) continue;
 
-    for (int event = 0; event < max_entries; ++event) {
-        tree->GetEntry(event);
-
-        for (int k = 0; k < calo_nohits; ++k) {
-            int om_num = calculate_om_num(calo_type, calo_side, calo_wall, calo_column, calo_row, k);
-            std::vector<short>& wave_k = wave->at(k);
-
-            if (om_num == 530 && wave_k.size() > 1023) {
+                /* --- update min/max --- */
                 for (int bin = 950; bin <= 1023; ++bin) {
                     short adc = wave_k[bin];
                     if (adc < min_adc_per_bin[bin]) min_adc_per_bin[bin] = adc;
                     if (adc > max_adc_per_bin[bin]) max_adc_per_bin[bin] = adc;
                 }
-                // Create TGraph for overlay
+
+                /* --- add waveform to overlay multigraph --- */
                 int n_bins = wave_k.size();
-                TGraph* gr = new TGraph(n_bins-950);
-                for (int bin = 950; bin < n_bins; ++bin) {
-                    gr->SetPoint(bin-950, bin, wave_k[bin]);
-                }
-                gr->SetLineColorAlpha(kBlue, 0.1);  // semi-transparent blue
-                gr->SetLineWidth(1);
-                mg->Add(gr);
+                TGraph* gr = new TGraph(n_bins - 950);
+                for (int bin = 950; bin < n_bins; ++bin)
+                    gr->SetPoint(bin - 950, bin, wave_k[bin]);
+                gr->SetLineColorAlpha(kBlue, 0.1);
+                mg->Add(gr, "L");
             }
         }
-    }
-    // Now draw and save overlay plot
-    mg->Draw("AL");  // Draw axes + all graphs
-    c_overlay->Update();
-    c_overlay->SaveAs("om530_overlay.png");
+        mg->Draw("AL");
+        c_overlay->SaveAs(Form("om%d_overlay.png", target_om));
+        delete c_overlay;   // (mg’s TGraphs are owned by the multigraph, ROOT cleans them up)
 
-    // You can delete mg and c_overlay here if no longer needed
-    delete mg;
-    delete c_overlay;
+        // -------- create per‑bin histograms for THIS OM -----------------
+        std::map<int, TH1D*> bin_histograms;
+        for (int bin = 950; bin <= 1023; ++bin) {
+            int   lo = min_adc_per_bin[bin] - 5;
+            int   hi = max_adc_per_bin[bin] + 5;
+            int   nb = hi - lo + 1;
+            TString hname  = Form("om%d_bin%d", target_om, bin);
+            TString htitle = Form("OM %d – Bin %d;ADC;Counts", target_om, bin);
+            bin_histograms[bin] = new TH1D(hname, htitle, nb, lo, hi);
+        }
 
-    //////////////////////////////////////////////////////////////////////////
-    // Allocate histograms using dynamic ranges
-    std::map<int, TH1D*> bin_histograms;
-    for (int bin = 950; bin <= 1023; ++bin) {
-        short min_adc = min_adc_per_bin[bin] - 5;  // padding
-        short max_adc = max_adc_per_bin[bin] + 5;
-        int nbins = max_adc - min_adc + 1;  // number of bins based on dynamic range
+        // -------- Pass‑2 : fill those histograms (still ONLY this OM) ---
+        for (int event = 0; event < max_entries; ++event) {
+            tree->GetEntry(event);
+            for (int k = 0; k < calo_nohits; ++k) {
+                int om_num = calculate_om_num(calo_type, calo_side, calo_wall,
+                                            calo_column, calo_row, k);
+                if (om_num != target_om) continue;
 
-        TString hist_name = Form("om530_bin%d", bin);
-        TString hist_title = Form("OM 530 - Bin %d;ADC Value;Counts", bin);
-        bin_histograms[bin] = new TH1D(hist_name, hist_title, nbins, min_adc, max_adc);
-    }
+                const std::vector<short>& wave_k = wave->at(k);
+                if (wave_k.size() <= 1023) continue;
 
-    //////////////////////////////////////////////////////////////////////////
-    // Pass 2: Fill baseline tree and histograms
-    for (int event = 0; event < max_entries; ++event) {
-        tree->GetEntry(event);
-        for (int k = 0; k < calo_nohits; ++k) {
-            int om_num = calculate_om_num(calo_type, calo_side, calo_wall, calo_column, calo_row, k);
-            std::vector<short>& wave_k = wave->at(k);
-            int fcr_k = fcr->at(k);
-
-            std::vector<short> r_waveform = reorder_waveform(wave_k, fcr_k);
-            double baseline = calculate_baseline(wave_k);
-            double stddev = calculate_stddev(wave_k, baseline);
-            eom = calculate_eom(wave_k, baseline);
-
-            if (om_num == 530 && wave_k.size() > 1023) {
-                for (int bin = 950; bin <= 1023; ++bin) {
+                for (int bin = 950; bin <= 1023; ++bin)
                     bin_histograms[bin]->Fill(wave_k[bin]);
-                }
             }
-
-            om_num_out = om_num;
-            baseline_out = baseline;
-            stddev_out = stddev;
-            event_num = event;
-            timestamp_out = timestamp->at(k) * 6.25e-9;
-            timestamp_diff = calculate_timestamp_diff(om_num, timestamp_out);
-
-            baseline_tree->Fill();  
-        }
-    }
-
-    // Output the number of entries to the terminal
-    cout << "Max entries: " << max_entries << "\n";
-
-    //////////////////////////////////////////////////////////////////////////
-
-    // Fit and draw each histogram
-    TCanvas *c_fit = new TCanvas("c_fit", "Fits", 800, 600);
-
-    for (int bin = 950; bin <= 1023; ++bin) {
-        TH1D* hist = bin_histograms[bin];
-        if (hist->GetEntries() > 10) {
-            double xmin = hist->GetXaxis()->GetXmin();
-            double xmax = hist->GetXaxis()->GetXmax();
-
-            hist->Fit("gaus", "Q", "", xmin, xmax);
-            hist->Draw();
-            hist->GetFunction("gaus")->SetLineColor(kRed);
-            hist->GetFunction("gaus")->SetLineWidth(2);
-
-            TF1* fit_func = hist->GetFunction("gaus");
-            if (fit_func) {
-                double chi2 = fit_func->GetChisquare();
-                int ndf = fit_func->GetNDF();
-                double chi2_ndf = chi2 / ndf;
-                double sigma = fit_func->GetParameter(2);
-                double mean = fit_func->GetParameter(1);
-
-                stddevs.push_back(sigma);
-                bin_numbers.push_back(bin);
-                red_chi2.push_back(chi2_ndf);
-                g_mean.push_back(mean);
-
-                TPaveText* pave = new TPaveText(0.6, 0.75, 0.88, 0.85, "NDC");
-                pave->SetFillColor(0);
-                pave->SetBorderSize(1);
-                pave->AddText(Form("#chi^{2}/NDF = %.2f", chi2_ndf));
-                pave->Draw();
-
-                std::cout << "Bin " << bin
-                          << ": chi2 = " << chi2
-                          << ", NDF = " << ndf
-                          << ", chi2/NDF = " << chi2_ndf << std::endl;
-            }
-
-            // TString outname = Form("om530_bin%d_fit.png", bin);
-            // c_fit->SaveAs(outname);
         }
 
-        delete hist;  // clean up memory
-    }
-    delete c_fit;
+        // -------- Fit & save plots for THIS OM --------------------------
+        std::vector<double> means, sigmas; std::vector<int> bins;
+        TCanvas* c_fit = new TCanvas(Form("c_fit_om%d", target_om),
+                                    Form("OM%d fits", target_om), 800, 600);
 
-    //////////////////////////////////////////////////////////////////////////
-  // Create graph for means (line only, no error bars)
-    TGraph* gr_mean_line = new TGraph(bin_numbers.size());
-    for (size_t i = 0; i < bin_numbers.size(); ++i) {
-        gr_mean_line->SetPoint(i, bin_numbers[i], g_mean[i]);
-    }
-    gr_mean_line->SetLineColor(kBlue);
-    gr_mean_line->SetLineWidth(1);
+        for (int bin = 950; bin <= 1023; ++bin) {
+            TH1D* h = bin_histograms[bin];
+            if (h->GetEntries() < 10) continue;
+            h->Fit("gaus", "Q0");
+            TF1* f = h->GetFunction("gaus");
+            means .push_back(f->GetParameter(1));
+            sigmas.push_back(f->GetParameter(2));
+            bins  .push_back(bin);
+        }
+        delete c_fit;
 
-    // Create graph for errors only (no line, only errors)
-    TGraphErrors* gr_errors = new TGraphErrors(bin_numbers.size());
-    for (size_t i = 0; i < bin_numbers.size(); ++i) {
-        gr_errors->SetPoint(i, bin_numbers[i], g_mean[i]);
-        gr_errors->SetPointError(i, 0, stddevs[i]);
-    }
-    gr_errors->SetLineColor(kRed);        // Color for error bars
-    gr_errors->SetMarkerStyle(0);         // No marker
-    gr_errors->SetFillColor(0);           // No fill
-    gr_errors->SetLineWidth(2);           
+        TGraph* g_line = new TGraph(bins.size());
+        for (size_t i = 0; i < bins.size(); ++i)
+            g_line->SetPoint(i, bins[i], means[i]);
 
-    // Draw canvas
-    TCanvas* c_mean = new TCanvas("c_mean", "Mean per Bin", 800, 600);
-    gr_mean_line->SetTitle("Mean from Gaussian Fit;Bin Number;Mean [ADC]");
-    gr_mean_line->Draw("AL");          // Draw line and axes
-    gr_errors->Draw("E SAME");         // Draw error bars on top
+        g_line->SetLineColor(kBlue);   // blue line
+        g_line->SetLineWidth(2);
 
-    c_mean->SaveAs("om530_mean_per_bin_Sigma.png");
+        /* ---- mean‑vs‑bin graph ---- */
+        TGraphErrors* g = new TGraphErrors(bins.size());
+        for (size_t i=0;i<bins.size();++i){
+            g->SetPoint(i, bins[i], means[i]);
+            g->SetPointError(i, 0, sigmas[i]);
+        }
+        g->SetLineColor(kRed);  // red line
 
-    // Clean up
-    delete gr_mean_line;
-    delete gr_errors;
-    delete c_mean;
+        TCanvas* c_mean = new TCanvas(Form("c_mean_om%d", target_om),
+                                    Form("OM%d mean per bin", target_om), 800, 600);
+        g->SetTitle(Form("OM %d - Mean from Gaussian Fit;Bin;Mean [ADC]", target_om));
+        g_line->Draw("AL");
+        g->Draw("E1P SAME");
+        c_mean->SaveAs(Form("om%d_mean_per_bin.png", target_om));
+        delete c_mean;
+
+        // -------- tidy the histograms for THIS OM -----------------------
+        for (auto& kv : bin_histograms) delete kv.second;
+    }  // -------- end loop over om_list ----------------------------------
+    
 
 
     //////////////////////////////////////////////////////////////////////////
