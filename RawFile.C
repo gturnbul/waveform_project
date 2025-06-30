@@ -48,6 +48,7 @@
 #include <TPaveText.h>
 #include <TArrayF.h>
 #include <unordered_map>
+#include <TVirtualFFT.h>
 
 // Macro Definition
 #define _USE_MATH_DEFINES
@@ -261,6 +262,7 @@ csv_file << "event,om_num,original_stddev,processed_stddev\n";  // CSV header
     //////////////////////////////////////////////////////////////////////////
    #include <unordered_map>  // add at the top with other headers if not already included
 
+    // Loop over the OMs
 for (int target_om : om_list)
 {
     std::map<int, short> min_adc_per_bin, max_adc_per_bin;
@@ -357,7 +359,7 @@ for (int target_om : om_list)
         tree->GetEntry(event);
         for (int k = 0; k < calo_nohits; ++k) {
             int om_num = calculate_om_num(calo_type, calo_side, calo_wall, calo_column, calo_row, k);
-            if (om_num != target_om) continue;
+            if (om_num != target_om) continue; 
 
             const std::vector<short>& wave_k = wave->at(k);
             if (wave_k.size() <= 1023) continue;
@@ -367,6 +369,17 @@ for (int target_om : om_list)
                 double mean = bin_means.count(bin) ? bin_means[bin] : 0.0;
                 subtracted.push_back(wave_k[bin] - mean);
             }
+            // create FFT input histogram
+            TH1D *h_waveform = new TH1D(Form("h_waveform_om%d_evt%d", target_om, event),
+                                          Form("OM %d Event %d Waveform;Bin;ADC", target_om, event), 1024, 0, 1024);
+            for (int bin = 0; bin <= 1023; ++bin) {
+                h_waveform->SetBinContent(bin + 1, subtracted[bin]);
+            }
+
+            // Perform FFT
+            TVirtualFFT::SetTransform(0);
+            TH1 *h_fft = h_waveform->FFT(nullptr, "MAG");
+
             // Add the new stddev calculations here:
             double baseline_orig = calculate_baseline(wave_k);
             double stddev_orig = calculate_stddev(wave_k, baseline_orig);
@@ -382,22 +395,22 @@ for (int target_om : om_list)
             csv_file << event << "," << om_num << "," << stddev_orig << "," << stddev_sub << "\n";
 
   
-            // -----  ORIGINAL waveform plot  -----
-            TCanvas* c_orig = new TCanvas(
-                Form("c_orig_om%d_evt%d", target_om, event),
-                Form("OM %d Event %d - Original", target_om, event), 800, 600);
+            // // -----  ORIGINAL waveform plot  -----
+            // TCanvas* c_orig = new TCanvas(
+            //     Form("c_orig_om%d_evt%d", target_om, event),
+            //     Form("OM %d Event %d - Original", target_om, event), 800, 600);
 
-            TGraph* g_orig = new TGraph(1024);  // all bins 0 to 1023
-            for (int i = 0; i < 1024; ++i)
-                g_orig->SetPoint(i, i, wave_k[i]);
+            // TGraph* g_orig = new TGraph(1024);  // all bins 0 to 1023
+            // for (int i = 0; i < 1024; ++i)
+            //     g_orig->SetPoint(i, i, wave_k[i]);
 
-            g_orig->SetTitle(
-                Form("OM %d Event %d - Original;Bin;ADC", target_om, event));
-            g_orig->SetLineColor(kBlack);
-            g_orig->Draw("AL");
-            c_orig->SaveAs(Form("original_om%d_evt%d.png", target_om, event));
-            delete c_orig;
-            delete g_orig;
+            // g_orig->SetTitle(
+            //     Form("OM %d Event %d - Original;Bin;ADC", target_om, event));
+            // g_orig->SetLineColor(kBlack);
+            // g_orig->Draw("AL");
+            // c_orig->SaveAs(Form("original_om%d_evt%d.png", target_om, event));
+            // delete c_orig;
+            // delete g_orig;
 
 
             TCanvas* c_sub = new TCanvas(Form("c_sub_om%d_evt%d", target_om, event),
@@ -412,6 +425,20 @@ for (int target_om : om_list)
             c_sub->SaveAs(Form("subtracted_om%d_evt%d.png", target_om, event));
             delete c_sub;
             delete g_sub;
+
+            // draw fft
+            TCanvas* c_fft = new TCanvas(Form("c_fft_om%d_evt%d", target_om, event),
+                                          Form("OM %d Event %d - FFT", target_om, event), 800, 600);
+            h_fft->SetTitle(Form("OM %d Event %d - FFT;Bin;Magnitude", target_om, event));
+            h_fft->SetLineColor(kBlue);
+            h_fft->Draw("L");
+
+            c_fft->SaveAs(Form("fft_om%d_evt%d.png", target_om, event));
+
+            // Clean up
+            delete h_waveform;
+            delete h_fft;
+            delete c_fft;
 
         }
     }
