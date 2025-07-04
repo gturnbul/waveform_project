@@ -48,7 +48,6 @@
 #include <TPaveText.h>
 #include <TArrayF.h>
 #include <unordered_map>
-#include <TVirtualFFT.h>
 
 // Macro Definition
 #define _USE_MATH_DEFINES
@@ -138,10 +137,10 @@ double calculate_baseline(const std::vector<short>& waveform) {
 // Function to calculate chi2df
 double calculate_stddev(const std::vector<short>& waveform, double baseline) {
     double sum_sq_diff = 0;
-    for (int i = 0; i < 976; ++i) {
+    for (int i = 976; i < 1024; ++i) {
         sum_sq_diff += pow(waveform[i] - baseline, 2);
     }
-    return sqrt(sum_sq_diff / 976);
+    return sqrt(sum_sq_diff / 48);
 }
 
 // Function to calculate error on the mean (EOM), with sigma calculated inside
@@ -181,16 +180,52 @@ std::vector<short> reorder_waveform(const std::vector<short>& waveform, int fcr)
     return reordered;
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////
+std::vector<double> compute_mod16(const std::vector<short>& waveform) {
+    std::vector<double> averages(16, 0.0);
+    std::vector<int> counts(16, 0);
+
+    for (int i = 0; i < 976; ++i) {
+        int batch_index = i % 16;
+        averages[batch_index] += waveform[i];
+        counts[batch_index]++;
+    }
+
+    for (int i = 0; i < 16; ++i) {
+        if (counts[i] > 0)
+            averages[i] /= counts[i];
+    }
+
+    return averages;
+}
 
 //////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////  Main ///////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////
 int main(){
 std::ofstream csv_file("stddev_output.csv");
-csv_file << "event,om_num,original_stddev,processed_stddev\n";  // CSV header
+csv_file << "om_num,bin_num,original_stddev,processed_stddev\n";  // CSV header
+
+TFile* stddev_outfile = new TFile("baseline_stddev_1143.root", "RECREATE");
+TTree* stddev_tree = new TTree("stddev_tree", "OM standard deviation data");
+
+int om_num_stddev;
+int bin_number;  // This will hold the bin number, can be adjusted to a range if needed
+double original_stddev;
+double processed_stddev;
+
+stddev_tree->Branch("om_num", &om_num_stddev, "om_num/I");
+stddev_tree->Branch("bin_number", &bin_number, "bin_number/I");  // Branch for bin number
+stddev_tree->Branch("original_stddev", &original_stddev, "original_stddev/D");
+stddev_tree->Branch("processed_stddev", &processed_stddev, "processed_stddev/D");
+
+TH1D* h_original_stddev = new TH1D("h_original_stddev", "Original StdDev;StdDev;Entries", 100, 0, 100);
+TH1D* h_processed_stddev = new TH1D("h_processed_stddev", "Processed StdDev;StdDev;Entries", 100, 0, 100);
+
+
 
     //oms to analyse
-    std::vector<int> om_list = {37,39,47,66,107,112,131,168,170,173,181,184,214,217,229,250,258,262,266,269,270,292,311,335,363,386,389,391,402,408,446,455,458,476,482,485,511,523,524,527,528,531,540,542,542,555,559,573,580,596,614,617,625,633,638,640,672,685,688,695};          // OMs to analyse
+    std::vector<int> om_list;          // OMs to analyse
     // Open the ROOT file
     TFile *file = new TFile("snemo_run-1143_udd.root", "READ");
     TTree *tree = (TTree *)file->Get("SimData");
@@ -222,13 +257,13 @@ csv_file << "event,om_num,original_stddev,processed_stddev\n";  // CSV header
 
     // *** containers keyed by OM ***
     std::unordered_map<int,TCanvas*>     c_overlay;
-    std::unordered_map<int,TMultiGraph*> mg_overlay;
     std::map<std::pair<int,int>,short>   adc_min, adc_max; // (om,bin)->min/max
     std::map<std::pair<int,int>,TH1D*>   h_bin;            // (om,bin)->hist
 
     // Create output ROOT file and TTree for baseline data
     TFile *outfile = new TFile("baseline_output_tree1143.root", "RECREATE");
     TTree *baseline_tree = new TTree("baseline_tree", "OM baseline data");
+
 
     // Initialise output variables
     int om_num_out = -1;
@@ -260,197 +295,218 @@ csv_file << "event,om_num,original_stddev,processed_stddev\n";  // CSV header
 
 
     //////////////////////////////////////////////////////////////////////////
-   #include <unordered_map>  // add at the top with other headers if not already included
-
-    // Loop over the OMs
-for (int target_om : om_list)
-{
-    std::map<int, short> min_adc_per_bin, max_adc_per_bin;
-    std::vector<double> means, sigmas;
-    std::vector<int> bins;
-
-    for (int bin = 0; bin <= 1023; ++bin) {
-        min_adc_per_bin[bin] = std::numeric_limits<short>::max();
-        max_adc_per_bin[bin] = std::numeric_limits<short>::min();
+    for (int v = 0; v <= 711; ++v){
+        om_list.push_back(v);
     }
 
-    // Pass-1: Get min/max ADCs
-    for (int event = 10; event < max_entries; ++event) {
-        tree->GetEntry(event);
-        for (int k = 0; k < calo_nohits; ++k) {
-            int om_num = calculate_om_num(calo_type, calo_side, calo_wall, calo_column, calo_row, k);
-            if (om_num != target_om) continue;
 
-            const std::vector<short>& wave_k = wave->at(k);
-            if (wave_k.size() <= 1023) continue;
+    for (int target_om : om_list){
+        std::map<int, short> min_adc_per_bin, max_adc_per_bin;
+        std::vector<double> means, sigmas;
+        std::vector<int> bins;
 
-            for (int bin = 0; bin <= 1023; ++bin) {
-                short adc = wave_k[bin];
-                if (adc < min_adc_per_bin[bin]) min_adc_per_bin[bin] = adc;
-                if (adc > max_adc_per_bin[bin]) max_adc_per_bin[bin] = adc;
+        for (int bin = 976; bin <= 1023; ++bin) {
+            min_adc_per_bin[bin] = std::numeric_limits<short>::max();
+            max_adc_per_bin[bin] = std::numeric_limits<short>::min();
+        }
+
+        // Pass-1: Get min/max ADCs
+        for (int event = 10; event < max_entries; ++event) {
+            tree->GetEntry(event);
+            for (int k = 0; k < calo_nohits; ++k) {
+                int om_num = calculate_om_num(calo_type, calo_side, calo_wall, calo_column, calo_row, k);
+                if (om_num != target_om) continue;
+
+                const std::vector<short>& wave_k = wave->at(k);
+                if (wave_k.size() <= 1023) continue;
+
+                for (int bin = 976; bin <= 1023; ++bin) {
+                    short adc = wave_k[bin];
+                    if (adc < min_adc_per_bin[bin]) min_adc_per_bin[bin] = adc;
+                    if (adc > max_adc_per_bin[bin]) max_adc_per_bin[bin] = adc;
+                }
             }
         }
-    }
 
-    // Create histograms
-    std::map<int, TH1D*> bin_histograms;
-    for (int bin = 0; bin <= 1023; ++bin) {
-        int lo = min_adc_per_bin[bin] - 5;
-        int hi = max_adc_per_bin[bin] + 5;
-        int nb = hi - lo + 1;
-        TString hname = Form("om%d_bin%d", target_om, bin);
-        TString htitle = Form("OM %d  Bin %d;ADC;Counts", target_om, bin);
-        bin_histograms[bin] = new TH1D(hname, htitle, nb, lo, hi);
-    }
-
-    // Pass-2: Fill histograms
-    for (int event = 10; event < max_entries; ++event) {
-        tree->GetEntry(event);
-        for (int k = 0; k < calo_nohits; ++k) {
-            int om_num = calculate_om_num(calo_type, calo_side, calo_wall, calo_column, calo_row, k);
-            if (om_num != target_om) continue;
-
-            const std::vector<short>& wave_k = wave->at(k);
-            if (wave_k.size() <= 1023) continue;
-
-            for (int bin = 0; bin <= 1023; ++bin)
-                bin_histograms[bin]->Fill(wave_k[bin]);
+        // Create histograms
+        std::map<int, TH1D*> bin_histograms;
+        for (int bin = 976; bin <= 1023; ++bin) {
+            int lo = min_adc_per_bin[bin] - 5;
+            int hi = max_adc_per_bin[bin] + 5;
+            int nb = hi - lo + 1;
+            TString hname = Form("om%d_bin%d", target_om, bin);
+            TString htitle = Form("OM %d  Bin %d;ADC;Counts", target_om, bin);
+            bin_histograms[bin] = new TH1D(hname, htitle, nb, lo, hi);
         }
-    }
 
-    // Gaussian fits
-    std::unordered_map<int, double> bin_means;
-    means.clear();
-    sigmas.clear();
-    bins.clear();
+        // Pass-2: Fill histograms
+        for (int event = 10; event < max_entries; ++event) {
+            tree->GetEntry(event);
+            for (int k = 0; k < calo_nohits; ++k) {
+                int om_num = calculate_om_num(calo_type, calo_side, calo_wall, calo_column, calo_row, k);
+                if (om_num != target_om) continue;
 
-    for (int bin = 0; bin <= 1023; ++bin) {
-        TH1D* h = bin_histograms[bin];
-        if (h->GetEntries() < 10) continue;
-        h->Fit("gaus", "Q0");
-        TF1* f = h->GetFunction("gaus");
-        if (!f) continue;
+                const std::vector<short>& wave_k = wave->at(k);
+                if (wave_k.size() <= 1023) continue;
 
-        double mean = f->GetParameter(1);
-        double sigma = f->GetParameter(2);
-
-        bin_means[bin] = mean;
-        means.push_back(mean);
-        sigmas.push_back(sigma);
-        bins.push_back(bin);
-    }
-
-    // OPTIONAL: plot mean per bin
-    TGraphErrors* g = new TGraphErrors(bins.size());
-    for (size_t i = 0; i < bins.size(); ++i) {
-        g->SetPoint(i, bins[i], means[i]);
-        g->SetPointError(i, 0, sigmas[i]);
-    }
-    TCanvas* c_mean = new TCanvas(Form("c_mean_om%d", target_om),
-                                  Form("OM%d mean per bin", target_om), 800, 600);
-    g->SetTitle(Form("OM %d - Mean from Gaussian Fit;Bin;Mean [ADC]", target_om));
-    g->SetLineColor(kRed);
-    g->Draw("ALP");
-    //c_mean->SaveAs(Form("om%d_mean_per_bin.png", target_om));
-    delete c_mean;
-
-    // Event-by-event subtracted plots
-    for (int event = 10; event < 20; ++event) {
-        tree->GetEntry(event);
-        for (int k = 0; k < calo_nohits; ++k) {
-            int om_num = calculate_om_num(calo_type, calo_side, calo_wall, calo_column, calo_row, k);
-            if (om_num != target_om) continue; 
-
-            const std::vector<short>& wave_k = wave->at(k);
-            if (wave_k.size() <= 1023) continue;
-
-            std::vector<double> subtracted;
-            for (int bin = 0; bin <= 1023; ++bin) {
-                double mean = bin_means.count(bin) ? bin_means[bin] : 0.0;
-                subtracted.push_back(wave_k[bin] - mean);
+                for (int bin = 976; bin <= 1023; ++bin)
+                    bin_histograms[bin]->Fill(wave_k[bin]);
             }
-            // create FFT input histogram
-            TH1D *h_waveform = new TH1D(Form("h_waveform_om%d_evt%d", target_om, event),
-                                          Form("OM %d Event %d Waveform;Bin;ADC", target_om, event), 1024, 0, 1024);
-            for (int bin = 0; bin <= 1023; ++bin) {
-                h_waveform->SetBinContent(bin + 1, subtracted[bin]);
-            }
-
-            // Perform FFT
-            TVirtualFFT::SetTransform(0);
-            TH1 *h_fft = h_waveform->FFT(nullptr, "MAG");
-
-            // Add the new stddev calculations here:
-            double baseline_orig = calculate_baseline(wave_k);
-            double stddev_orig = calculate_stddev(wave_k, baseline_orig);
-
-            double mean_sub = 0;
-            for (auto val : subtracted) mean_sub += val;
-            mean_sub /= subtracted.size();
-
-            double sum_sq_diff_sub = 0;
-            for (auto val : subtracted) sum_sq_diff_sub += (val - mean_sub) * (val - mean_sub);
-            double stddev_sub = std::sqrt(sum_sq_diff_sub / subtracted.size());
-
-            csv_file << event << "," << om_num << "," << stddev_orig << "," << stddev_sub << "\n";
-
-  
-            // // -----  ORIGINAL waveform plot  -----
-            // TCanvas* c_orig = new TCanvas(
-            //     Form("c_orig_om%d_evt%d", target_om, event),
-            //     Form("OM %d Event %d - Original", target_om, event), 800, 600);
-
-            // TGraph* g_orig = new TGraph(1024);  // all bins 0 to 1023
-            // for (int i = 0; i < 1024; ++i)
-            //     g_orig->SetPoint(i, i, wave_k[i]);
-
-            // g_orig->SetTitle(
-            //     Form("OM %d Event %d - Original;Bin;ADC", target_om, event));
-            // g_orig->SetLineColor(kBlack);
-            // g_orig->Draw("AL");
-            // c_orig->SaveAs(Form("original_om%d_evt%d.png", target_om, event));
-            // delete c_orig;
-            // delete g_orig;
-
-
-            TCanvas* c_sub = new TCanvas(Form("c_sub_om%d_evt%d", target_om, event),
-                                         Form("OM %d Event %d - Mean-subtracted", target_om, event), 800, 600);
-            TGraph* g_sub = new TGraph(subtracted.size());
-            for (size_t i = 0; i < subtracted.size(); ++i)
-                g_sub->SetPoint(i, 0 + static_cast<int>(i), subtracted[i]);
-
-            g_sub->SetTitle(Form("OM %d Event %d - Mean-subtracted;Bin;ADC-Mean", target_om, event));
-            g_sub->SetLineColor(kBlue);
-            g_sub->Draw("AL");
-            c_sub->SaveAs(Form("subtracted_om%d_evt%d.png", target_om, event));
-            delete c_sub;
-            delete g_sub;
-
-            // draw fft
-            TCanvas* c_fft = new TCanvas(Form("c_fft_om%d_evt%d", target_om, event),
-                                          Form("OM %d Event %d - FFT", target_om, event), 800, 600);
-            h_fft->SetTitle(Form("OM %d Event %d - FFT;Bin;Magnitude", target_om, event));
-            h_fft->SetLineColor(kBlue);
-            h_fft->Draw("L");
-
-            c_fft->SaveAs(Form("fft_om%d_evt%d.png", target_om, event));
-
-            // Clean up
-            delete h_waveform;
-            delete h_fft;
-            delete c_fft;
-
         }
-    }
 
-    // Clean up histograms
-    for (auto& kv : bin_histograms) delete kv.second;
-}
+        // Gaussian fits
+        std::unordered_map<int, double> bin_means;
+        means.clear();
+        sigmas.clear();
+        bins.clear();
+
+        for (int bin = 976; bin <= 1023; ++bin) {
+            TH1D* h = bin_histograms[bin];
+            if (h->GetEntries() < 10) continue;
+            h->Fit("gaus", "Q0");
+            TF1* f = h->GetFunction("gaus");
+            if (!f) continue;
+
+            double mean = f->GetParameter(1);
+            double sigma = f->GetParameter(2);
+
+            bin_means[bin] = mean;
+            means.push_back(mean);
+            sigmas.push_back(sigma);
+            bins.push_back(bin);
+        }
+
+        // OPTIONAL: plot mean per bin
+        TGraphErrors* g = new TGraphErrors(bins.size());
+        for (size_t i = 0; i < bins.size(); ++i) {
+            g->SetPoint(i, bins[i], means[i]);
+            g->SetPointError(i, 0, sigmas[i]);
+        }
+        TCanvas* c_mean = new TCanvas(Form("c_mean_om%d", target_om),
+                                    Form("OM%d mean per bin", target_om), 800, 600);
+        g->SetTitle(Form("OM %d - Mean from Gaussian Fit;Bin;Mean [ADC]", target_om));
+        g->SetLineColor(kRed);
+        g->Draw("ALP");
+        //c_mean->SaveAs(Form("om%d_mean_per_bin.png", target_om));
+        delete c_mean;
+
+        const int BIN_START = 976;
+        const int BIN_END = 1023;
+        const int N_BINS = BIN_END - BIN_START + 1;
+
+        for (int event = 10; event < max_entries; ++event) {
+            tree->GetEntry(event);
+
+            for (int k = 0; k < calo_nohits; ++k) {
+                int om_num = calculate_om_num(calo_type, calo_side, calo_wall, calo_column, calo_row, k);
+                if (om_num != target_om) continue;
+
+                const std::vector<short>& wave_k = wave->at(k);
+                if (wave_k.size() <= BIN_END) continue;
+
+                std::vector<short> mod16_wave_k = wave_k; // Copy original waveform
+                std::vector<double> avg_mod16 = compute_mod16(wave_k);
+
+                // Replace bins 976–1023 with the computed averages
+                for (int i = 976; i <= 1023; ++i) {
+                    int avg_index = (i - 976) % 16;
+                    mod16_wave_k[i] = static_cast<short>(avg_mod16[avg_index]);
+                }
+
+
+                // Compute baseline and stddev of full waveform
+                double baseline_orig = calculate_baseline(wave_k);
+                double stddev_orig = calculate_stddev(wave_k, baseline_orig);
+
+                // Subtract bin mean for tail region
+                std::vector<double> subtracted(N_BINS);
+                double mean_sub = 0.0;
+
+                for (int i = 0; i < N_BINS; ++i) {
+                    int bin = BIN_START + i;
+                    double mean = bin_means.count(bin) ? bin_means[bin] : 0.0;
+                    subtracted[i] = wave_k[bin] - mean;
+                    mean_sub += subtracted[i];
+                }
+                mean_sub /= N_BINS;
+
+                double sum_sq_diff_sub = 0.0;
+                for (int i = 0; i < N_BINS; ++i) {
+                    sum_sq_diff_sub += std::pow(subtracted[i] - mean_sub, 2);
+                }
+
+                double stddev_sub = std::sqrt(sum_sq_diff_sub / N_BINS);
+
+                // Write results
+                csv_file << om_num << "," << BIN_START << "-" << BIN_END << "," 
+                        << stddev_orig << "," << stddev_sub << "\n";
+
+                h_original_stddev->Fill(stddev_orig);
+                h_processed_stddev->Fill(stddev_sub);
+
+                // Fill tree
+                om_num_stddev = om_num;
+                bin_number = BIN_START; // If you want to use a range, adjust variable type or format
+                original_stddev = stddev_orig;
+                processed_stddev = stddev_sub;
+                stddev_tree->Fill();
+
+        
+
+
+                // for (event = 10; event <15; ++event){
+                //     // -----  ORIGINAL waveform plot  -----
+                //     TCanvas* c_orig = new TCanvas(
+                //         Form("c_orig_om%d_evt%d", target_om, event),
+                //         Form("OM %d Event %d - Original", target_om, event), 800, 600);
+
+                //     TGraph* g_orig = new TGraph(1024);  // all bins 0 to 1023
+                //     for (int i = 0; i < 1024; ++i)
+                //         g_orig->SetPoint(i, i, wave_k[i]);
+
+                //     g_orig->SetTitle(
+                //         Form("OM %d Event %d - Original;Bin;ADC", target_om, event));
+                //     g_orig->SetLineColor(kBlack);
+                //     g_orig->Draw("AL");
+                //     c_orig->SaveAs(Form("original_om%d_evt%d.png", target_om, event));
+                //     delete c_orig;
+                //     delete g_orig;
+
+
+                //     TCanvas* c_sub = new TCanvas(Form("c_sub_om%d_evt%d", target_om, event),
+                //                                 Form("OM %d Event %d - Mean-subtracted", target_om, event), 800, 600);
+                //     TGraph* g_sub = new TGraph(subtracted.size());
+                //     for (size_t i = 0; i < subtracted.size(); ++i)
+                //         g_sub->SetPoint(i, 0 + static_cast<int>(i), subtracted[i]);
+
+                //     g_sub->SetTitle(Form("OM %d Event %d - Mean-subtracted;Bin;ADC-Mean", target_om, event));
+                //     g_sub->SetLineColor(kBlue);
+                //     g_sub->Draw("AL");
+                //     c_sub->SaveAs(Form("subtracted_om%d_evt%d.png", target_om, event));
+                //     delete c_sub;
+                //     delete g_sub;
+                // }
+
+            }
+        }
+
+        // Clean up histograms
+        for (auto& kv : bin_histograms) delete kv.second;
+    }
 
     //////////////////////////////////////////////////////////////////////////
     // Write and close output
     baseline_tree->Write();
     outfile->Close();
-    delete outfile;
+    delete outfile; 
+    stddev_outfile->cd();
+    stddev_tree->Write();
+    h_original_stddev->Write();
+    h_processed_stddev->Write();
+    stddev_outfile->Close();
+    delete stddev_outfile;
+    delete h_original_stddev;
+    delete h_processed_stddev;
+    csv_file.close();
     file->Close();
 }
