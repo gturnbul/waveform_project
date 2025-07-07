@@ -454,38 +454,41 @@ TH1D* h_processed_stddev = new TH1D("h_processed_stddev", "Processed StdDev;StdD
         
 
 
-                // for (event = 10; event <15; ++event){
-                //     // -----  ORIGINAL waveform plot  -----
-                //     TCanvas* c_orig = new TCanvas(
-                //         Form("c_orig_om%d_evt%d", target_om, event),
-                //         Form("OM %d Event %d - Original", target_om, event), 800, 600);
+                if (target_om == 173 && event == 12){
+                    // -----  ORIGINAL waveform plot  -----
+                    TCanvas* c_orig = new TCanvas(
+                        Form("c_orig_om%d_evt%d", target_om, event),
+                        Form("OM %d Event %d - Original", target_om, event), 800, 600);
 
-                //     TGraph* g_orig = new TGraph(1024);  // all bins 0 to 1023
-                //     for (int i = 0; i < 1024; ++i)
-                //         g_orig->SetPoint(i, i, wave_k[i]);
+                    const int start_bin = 976;
+                    const int n_bins = 48; // 976 to 1023 inclusive
 
-                //     g_orig->SetTitle(
-                //         Form("OM %d Event %d - Original;Bin;ADC", target_om, event));
-                //     g_orig->SetLineColor(kBlack);
-                //     g_orig->Draw("AL");
-                //     c_orig->SaveAs(Form("original_om%d_evt%d.png", target_om, event));
-                //     delete c_orig;
-                //     delete g_orig;
+                    TGraph* g_orig = new TGraph(n_bins);  // all bins 0 to 1023
+                    for (int i = 0; i < n_bins; ++i)
+                        g_orig->SetPoint(i, start_bin + i , wave_k[start_bin+ i]);
+
+                    g_orig->SetTitle(
+                        Form("OM %d Event %d - Original;Bin;ADC", target_om, event));
+                    g_orig->SetLineColor(kBlack);
+                    g_orig->Draw("AL");
+                    c_orig->SaveAs(Form("original_om%d_evt%d.png", target_om, event));
+                    delete c_orig;
+                    delete g_orig;
 
 
-                //     TCanvas* c_sub = new TCanvas(Form("c_sub_om%d_evt%d", target_om, event),
-                //                                 Form("OM %d Event %d - Mean-subtracted", target_om, event), 800, 600);
-                //     TGraph* g_sub = new TGraph(subtracted.size());
-                //     for (size_t i = 0; i < subtracted.size(); ++i)
-                //         g_sub->SetPoint(i, 0 + static_cast<int>(i), subtracted[i]);
+                    TCanvas* c_sub = new TCanvas(Form("c_sub_om%d_evt%d", target_om, event),
+                                                Form("OM %d Event %d - Mean-subtracted", target_om, event), 800, 600);
+                    TGraph* g_sub = new TGraph(n_bins);  
+                    for (size_t i = 0; i < n_bins; ++i)
+                        g_sub->SetPoint(i, 976 + static_cast<int>(i), subtracted[i]);
 
-                //     g_sub->SetTitle(Form("OM %d Event %d - Mean-subtracted;Bin;ADC-Mean", target_om, event));
-                //     g_sub->SetLineColor(kBlue);
-                //     g_sub->Draw("AL");
-                //     c_sub->SaveAs(Form("subtracted_om%d_evt%d.png", target_om, event));
-                //     delete c_sub;
-                //     delete g_sub;
-                // }
+                    g_sub->SetTitle(Form("OM %d Event %d - Mean-subtracted;Bin;ADC-Mean", target_om, event));
+                    g_sub->SetLineColor(kBlue);
+                    g_sub->Draw("AL");
+                    c_sub->SaveAs(Form("subtracted_om%d_evt%d.png", target_om, event));
+                    delete c_sub;
+                    delete g_sub;
+                }
 
             }
         }
