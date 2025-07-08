@@ -203,10 +203,10 @@ std::vector<double> compute_mod16(const std::vector<short>& waveform) {
 ////////////////////////////////  Main ///////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////
 int main(){
-std::ofstream csv_file("stddev_output.csv");
+std::ofstream csv_file("stddevmod16_output.csv");
 csv_file << "om_num,bin_num,original_stddev,processed_stddev\n";  // CSV header
 
-TFile* stddev_outfile = new TFile("baseline_stddev_1143.root", "RECREATE");
+TFile* stddev_outfile = new TFile("baseline_stddevmod16_1143.root", "RECREATE");
 TTree* stddev_tree = new TTree("stddev_tree", "OM standard deviation data");
 
 int om_num_stddev;
@@ -293,6 +293,8 @@ TH1D* h_processed_stddev = new TH1D("h_processed_stddev", "Processed StdDev;StdD
     std::vector<double> red_chi2;
     std::vector<double> g_mean;
 
+    std::unordered_map<int, std::vector<double>> om_offsets;
+    std::unordered_map<int, std::vector<double>> om_bin_corrections;
 
     //////////////////////////////////////////////////////////////////////////
     for (int v = 0; v <= 711; ++v){
@@ -305,7 +307,7 @@ TH1D* h_processed_stddev = new TH1D("h_processed_stddev", "Processed StdDev;StdD
         std::vector<double> means, sigmas;
         std::vector<int> bins;
 
-        for (int bin = 976; bin <= 1023; ++bin) {
+        for (int bin = 0; bin <= 1023; ++bin) {
             min_adc_per_bin[bin] = std::numeric_limits<short>::max();
             max_adc_per_bin[bin] = std::numeric_limits<short>::min();
         }
@@ -320,7 +322,7 @@ TH1D* h_processed_stddev = new TH1D("h_processed_stddev", "Processed StdDev;StdD
                 const std::vector<short>& wave_k = wave->at(k);
                 if (wave_k.size() <= 1023) continue;
 
-                for (int bin = 976; bin <= 1023; ++bin) {
+                for (int bin = 0; bin <= 1023; ++bin) {
                     short adc = wave_k[bin];
                     if (adc < min_adc_per_bin[bin]) min_adc_per_bin[bin] = adc;
                     if (adc > max_adc_per_bin[bin]) max_adc_per_bin[bin] = adc;
@@ -330,7 +332,7 @@ TH1D* h_processed_stddev = new TH1D("h_processed_stddev", "Processed StdDev;StdD
 
         // Create histograms
         std::map<int, TH1D*> bin_histograms;
-        for (int bin = 976; bin <= 1023; ++bin) {
+        for (int bin = 0; bin <= 1023; ++bin) {
             int lo = min_adc_per_bin[bin] - 5;
             int hi = max_adc_per_bin[bin] + 5;
             int nb = hi - lo + 1;
@@ -349,7 +351,7 @@ TH1D* h_processed_stddev = new TH1D("h_processed_stddev", "Processed StdDev;StdD
                 const std::vector<short>& wave_k = wave->at(k);
                 if (wave_k.size() <= 1023) continue;
 
-                for (int bin = 976; bin <= 1023; ++bin)
+                for (int bin = 0; bin <= 1023; ++bin)
                     bin_histograms[bin]->Fill(wave_k[bin]);
             }
         }
@@ -360,7 +362,7 @@ TH1D* h_processed_stddev = new TH1D("h_processed_stddev", "Processed StdDev;StdD
         sigmas.clear();
         bins.clear();
 
-        for (int bin = 976; bin <= 1023; ++bin) {
+        for (int bin = 0; bin <= 1023; ++bin) {
             TH1D* h = bin_histograms[bin];
             if (h->GetEntries() < 10) continue;
             h->Fit("gaus", "Q0");
@@ -374,6 +376,47 @@ TH1D* h_processed_stddev = new TH1D("h_processed_stddev", "Processed StdDev;StdD
             means.push_back(mean);
             sigmas.push_back(sigma);
             bins.push_back(bin);
+        }
+        //create mod16 means
+        std::vector<double> offset_sum(16, 0.0);
+        std::vector<int> offset_count(16, 0);
+
+        // Only go up to bin 975
+        for (int bin = 0; bin <= 975; ++bin) {
+            if (bin_means.count(bin)) {
+                int mod_index = bin % 16;
+                offset_sum[mod_index] += bin_means[bin];
+                offset_count[mod_index]++;
+            }
+        }
+
+        std::vector<double> offset(16, 0.0);
+        for (int i = 0; i < 16; ++i) {
+            if (offset_count[i] > 0)
+                offset[i] = offset_sum[i] / offset_count[i];
+            else
+                offset[i] = 0;  // Or handle missing data appropriately
+        }
+        om_offsets[target_om] = offset;
+
+        // find corrections for each om
+        std::vector<double> corrections(48); // 1023 - 976 + 1 = 48 bins in tail
+        for (int bin = 976; bin <= 1023; ++bin) {
+            if (bin_means.count(bin)) {
+                double gauss_mean = bin_means[bin];
+                double offset = om_offsets[target_om][bin % 16];
+                corrections[bin - 976] = gauss_mean - offset;  // This is the *difference*
+            } else {
+                corrections[bin - 976] = 0.0; // or some fallback
+            }
+        }
+        om_bin_corrections[target_om] = corrections;
+
+        // Write corrections to CSV for this OM
+        for (int bin = 976; bin <= 1023; ++bin) {
+            double original = bin_means.count(bin) ? bin_means[bin] : 0.0;
+            double correction = corrections[bin - 976];
+            csv_file << target_om << "," << bin << "," << original << "," << correction << "\n";
         }
 
         // OPTIONAL: plot mean per bin
@@ -404,28 +447,22 @@ TH1D* h_processed_stddev = new TH1D("h_processed_stddev", "Processed StdDev;StdD
                 const std::vector<short>& wave_k = wave->at(k);
                 if (wave_k.size() <= BIN_END) continue;
 
-                std::vector<short> mod16_wave_k = wave_k; // Copy original waveform
-                std::vector<double> avg_mod16 = compute_mod16(wave_k);
-
-                // Replace bins 976–1023 with the computed averages
-                for (int i = 976; i <= 1023; ++i) {
-                    int avg_index = (i - 976) % 16;
-                    mod16_wave_k[i] = static_cast<short>(avg_mod16[avg_index]);
-                }
-
 
                 // Compute baseline and stddev of full waveform
                 double baseline_orig = calculate_baseline(wave_k);
                 double stddev_orig = calculate_stddev(wave_k, baseline_orig);
 
-                // Subtract bin mean for tail region
+                // Subtract correction for tail region instead of Gaussian mean
                 std::vector<double> subtracted(N_BINS);
                 double mean_sub = 0.0;
 
                 for (int i = 0; i < N_BINS; ++i) {
                     int bin = BIN_START + i;
-                    double mean = bin_means.count(bin) ? bin_means[bin] : 0.0;
-                    subtracted[i] = wave_k[bin] - mean;
+                    double correction = 0.0;
+                    if (bin >= 976 && bin <= 1023) {
+                        correction = om_bin_corrections[target_om][bin - 976];
+                    }
+                    subtracted[i] = wave_k[bin] - correction;
                     mean_sub += subtracted[i];
                 }
                 mean_sub /= N_BINS;
