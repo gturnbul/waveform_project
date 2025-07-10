@@ -204,20 +204,29 @@ std::vector<double> compute_mod16(const std::vector<short>& waveform) {
 //////////////////////////////////////////////////////////////////////////////////////
 int main(){
 std::ofstream csv_file("stddevmod16_output.csv");
-csv_file << "om_num,bin_num,original_stddev,processed_stddev\n";  // CSV header
+csv_file << "om_num,bin_num,bin_mean,correction\n";  // CSV header
 
 TFile* stddev_outfile = new TFile("baseline_stddevmod16_1143.root", "RECREATE");
 TTree* stddev_tree = new TTree("stddev_tree", "OM standard deviation data");
+TFile* corrections_outfile = new TFile("om_bin_corrections_1143.root", "RECREATE");
+TTree* corrections_tree = new TTree("corrections_tree", "OM bin corrections data");
 
 int om_num_stddev;
 int bin_number;  // This will hold the bin number, can be adjusted to a range if needed
 double original_stddev;
 double processed_stddev;
+int om_num_corr, bin_number_corr;
+double correction_out;
 
 stddev_tree->Branch("om_num", &om_num_stddev, "om_num/I");
 stddev_tree->Branch("bin_number", &bin_number, "bin_number/I");  // Branch for bin number
 stddev_tree->Branch("original_stddev", &original_stddev, "original_stddev/D");
 stddev_tree->Branch("processed_stddev", &processed_stddev, "processed_stddev/D");
+
+corrections_tree->Branch("om_num", &om_num_corr, "om_num/I");
+corrections_tree->Branch("bin_number", &bin_number_corr, "bin_number/I");
+corrections_tree->Branch("correction", &correction_out, "correction/D");
+
 
 TH1D* h_original_stddev = new TH1D("h_original_stddev", "Original StdDev;StdDev;Entries", 100, 0, 100);
 TH1D* h_processed_stddev = new TH1D("h_processed_stddev", "Processed StdDev;StdDev;Entries", 100, 0, 100);
@@ -406,18 +415,19 @@ TH1D* h_processed_stddev = new TH1D("h_processed_stddev", "Processed StdDev;StdD
                 double gauss_mean = bin_means[bin];
                 double offset = om_offsets[target_om][bin % 16];
                 corrections[bin - 976] = gauss_mean - offset;  // This is the *difference*
+
+                om_num_corr = target_om;
+                bin_number_corr = bin;
+                correction_out = corrections[bin - 976];
+                corrections_tree->Fill();  // Fill the correction tree
+
+                //write correction to CSV
+                csv_file << target_om << "," << bin << "," << bin_means[bin - 976] << "," << corrections[bin - 976] << "\n";
             } else {
                 corrections[bin - 976] = 0.0; // or some fallback
             }
         }
         om_bin_corrections[target_om] = corrections;
-
-        // Write corrections to CSV for this OM
-        for (int bin = 976; bin <= 1023; ++bin) {
-            double original = bin_means.count(bin) ? bin_means[bin] : 0.0;
-            double correction = corrections[bin - 976];
-            csv_file << target_om << "," << bin << "," << original << "," << correction << "\n";
-        }
 
         // OPTIONAL: plot mean per bin
         TGraphErrors* g = new TGraphErrors(bins.size());
@@ -474,10 +484,6 @@ TH1D* h_processed_stddev = new TH1D("h_processed_stddev", "Processed StdDev;StdD
 
                 double stddev_sub = std::sqrt(sum_sq_diff_sub / N_BINS);
 
-                // Write results
-                csv_file << om_num << "," << BIN_START << "-" << BIN_END << "," 
-                        << stddev_orig << "," << stddev_sub << "\n";
-
                 h_original_stddev->Fill(stddev_orig);
                 h_processed_stddev->Fill(stddev_sub);
 
@@ -487,9 +493,6 @@ TH1D* h_processed_stddev = new TH1D("h_processed_stddev", "Processed StdDev;StdD
                 original_stddev = stddev_orig;
                 processed_stddev = stddev_sub;
                 stddev_tree->Fill();
-
-        
-
 
                 if (target_om == 173 && event == 12){
                     // -----  ORIGINAL waveform plot  -----
