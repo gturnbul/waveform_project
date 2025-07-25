@@ -122,6 +122,21 @@ double calculate_eom976(const std::vector<short>& waveform, double baseline) {
 
     return eom;
 }
+double calculate_eom48(const std::vector<short>& waveform, double baseline) {
+    double sum_sq_diff = 0.0;
+
+    for (int i = 976; i < 1024; ++i) {
+        double diff = waveform[i] - baseline;
+        sum_sq_diff += diff * diff;
+    }
+
+    double variance = sum_sq_diff / 48;          // Population variance
+    double sigma = std::sqrt(variance);          // Standard deviation
+    double eom = sigma / std::sqrt(48);          // Error on the mean
+
+    return eom;
+}
+
 struct Mod16Stats {
     std::vector<double> offsets;
     std::vector<double> sigmas;
@@ -243,24 +258,25 @@ int main(){
     double baseline_feb = 0;
     double stddev_feb = 0;
     double eom_feb = 0;
-    std::vector<double> mean_feb;
-    std::vector<double> sigma_feb;
-    std::vector<double> chi2ndf_feb;
-
-
+  
     //first 976 variables after wavecatcher (mod16) correction
     double baseline_976 = 0;
     double stddev_976 = 0;
     double eom_976 = 0;
-    std::vector<double> mean_976;
-    std::vector<double> sigma_976;
-    std::vector<double> chi2ndf_976;
-
 
     //end spike variables after end of waveform correction
     double baseline_end = 0;
     double stddev_end = 0;
     double eom_end = 0;
+
+    //Quality assurance variables
+    std::vector<double> mean_mem;
+    std::vector<double> sigma_mem;
+    std::vector<double> chi2ndf_mem; 
+    
+    std::vector<double> mean_timeo;
+    std::vector<double> sigma_timeo;
+    std::vector<double> chi2ndf_timeo;
 
     // Create branches in the output tree
     baseline_tree->Branch("event_num", &event_num, "event_num/I");
@@ -272,23 +288,22 @@ int main(){
     baseline_tree->Branch("baseline_feb", &baseline_feb, "baseline_feb/D");
     baseline_tree->Branch("stddev_feb", &stddev_feb, "stddev_feb/D");
     baseline_tree->Branch("eom_feb", &eom_feb, "eom_feb/D");
-    baseline_tree->Branch("mean_feb", &mean_feb);
-    baseline_tree->Branch("sigma_feb", &sigma_feb);
-    baseline_tree->Branch("chi2ndf_feb", &chi2ndf_feb);
 
     baseline_tree->Branch("baseline_976", &baseline_976, "baseline_976/D");
     baseline_tree->Branch("stddev_976", &stddev_976, "stddev_976/D");
     baseline_tree->Branch("eom_976", &eom_976, "eom_976/D");
-    baseline_tree->Branch("mean_976", &mean_976);
-    baseline_tree->Branch("sigma_976", &sigma_976);
-    baseline_tree->Branch("chi2ndf_976", &chi2ndf_976);
-
 
     baseline_tree->Branch("baseline_end", &baseline_end, "baseline_end/D");
     baseline_tree->Branch("stddev_end", &stddev_end, "stddev_end/D");
     baseline_tree->Branch("eom_end", &eom_end, "eom_end/D");
 
-
+    baseline_tree->Branch("mean_mem", &mean_mem);
+    baseline_tree->Branch("sigma_mem", &sigma_mem);
+    baseline_tree->Branch("chi2ndf_mem", &chi2ndf_mem);    
+    
+    baseline_tree->Branch("mean_timeo", &mean_timeo);
+    baseline_tree->Branch("sigma_timeo", &sigma_timeo);
+    baseline_tree->Branch("chi2ndf_timeo", &chi2ndf_timeo);
     //////////////////////////// MAPS ////////////////////////////////////////
     std::map<int, std::vector<std::vector<float>>> adc_values;
     std::map<int, std::vector<double>> mod16_offsets_per_om;
@@ -300,6 +315,9 @@ int main(){
     std::map<int, std::vector<double>> feb_sigmas_per_om;
     std::map<int, std::vector<double>> feb_chi2ndf_per_om;
 
+    std::map<int, std::vector<double>> eow_offsets_per_om;
+    std::map<int, std::vector<double>> eow_sigmas_per_om;
+    std::map<int, std::vector<double>> eow_chi2ndf_per_om;
 
     //////////////////////////////////////////////////////////////////////////////////////
     ///////////////////// Finding and saving ADC_VAL range limit per OM //////////////////
@@ -508,12 +526,79 @@ int main(){
 
     csv_file.close();
     // fit_file->Close();
+
     //////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////  End spike offsets  /////////////////////////////////
     //////////////////////////////////////////////////////////////////////////////////////
+    std::ofstream spike_csv_file("eow_spike_offsets.csv");
+    spike_csv_file << "om,bin,offset_value,sigma_value,chi2ndf_value\n";
 
-    // end of spike i want to take the mean difference between offset0 and bin 976, offset1 and bin 977 etc
-    // add that correction to the mod16 offset and store that as offset value
+    for (auto& om_pair : adc_values) {
+    int om_num = om_pair.first;
+    auto& adc_bins = om_pair.second;
+
+        // vectors to store spike offsets for this OM
+        std::vector<double> spike_means_om;
+        std::vector<double> spike_sigmas_om;
+        std::vector<double> spike_chi2ndf_om;
+
+        // Loop bins 976-1023 
+        for (int bin = 976; bin <= 1023; ++bin) {
+            std::vector<float>& adc_values_bin = adc_bins[bin];
+
+            TString hist_name = Form("om%d_bin%d", om_num, bin);
+            TString hist_title = Form("OM %d - Bin %d;ADC Value;Counts", om_num, bin);
+            float min_adc = *std::min_element(adc_values_bin.begin(), adc_values_bin.end()) - 5;
+            float max_adc = *std::max_element(adc_values_bin.begin(), adc_values_bin.end()) + 5;
+            int nbins = static_cast<int>(std::ceil(max_adc - min_adc + 1));
+            TH1D* hist = new TH1D(hist_name, hist_title, nbins, min_adc, max_adc);
+            for (float adc_value : adc_values_bin) {
+                hist->Fill(adc_value);
+            }
+
+            TF1* fit_func = new TF1("fit_func", "gaus", min_adc, max_adc);
+            hist->Fit(fit_func, "Q", "", min_adc, max_adc);
+            double mean = fit_func->GetParameter(1);
+            double sigma = fit_func->GetParameter(2);
+            double chi2 = fit_func->GetChisquare();
+            int ndf = fit_func->GetNDF();
+            double chi2_ndf = (ndf > 0) ? chi2 / ndf : -1;
+
+            // Save results directly instead of computing mod16 offsets
+            spike_means_om.push_back(mean);
+            spike_sigmas_om.push_back(sigma);
+            spike_chi2ndf_om.push_back(chi2_ndf);
+
+            delete hist;
+            delete fit_func;
+        }
+        // Store the results for this OM
+        eow_offsets_per_om[om_num] = spike_means_om;
+        eow_sigmas_per_om[om_num] = spike_sigmas_om;
+        eow_chi2ndf_per_om[om_num] = spike_chi2ndf_om;
+
+
+    }
+
+    // Write to CSV
+
+    for (const auto& om_pair : eow_offsets_per_om) {
+        int om_num = om_pair.first;
+        const auto& offsets = om_pair.second;
+        const auto& sigmas = eow_sigmas_per_om[om_num];
+        const auto& chi2s = eow_chi2ndf_per_om[om_num];
+
+        for (int i = 0; i < (int)offsets.size(); ++i) {
+            int bin = 976 + i;
+            spike_csv_file << om_num << ","
+                        << bin << ","
+                        << offsets[i] << ","
+                        << sigmas[i] << ","
+                        << chi2s[i] << "\n";
+        }
+    }
+    spike_csv_file.close();
+
 
 
     //////////////////////////////////////////////////////////////////////////////////////
@@ -582,15 +667,32 @@ int main(){
             stddev_976 = calculate_stddev976(wave->at(j), baseline_976);
             eom_976 = calculate_eom976(wave->at(j), baseline_976);
          
-            // end spike correction /////////////////////////////////////////////////////////////////////
+            // Spike correction for bins 976–1023 /////////////////////////////////////////////////
+            auto it_spike = eow_offsets_per_om.find(om_num);
 
+            if (it_spike != eow_offsets_per_om.end()) {
+                const std::vector<double>& spike_offsets = it_spike->second;
 
+                for (int bin = 976; bin <= 1023; ++bin) {
+                    int spike_bin_index = bin - 976;
+                    if (spike_bin_index < (int)spike_offsets.size()) {
+                        wave->at(j)[bin] -= spike_offsets[spike_bin_index];
+                    }
+                }
+            } else {
+                std::cerr << "Warning: No spike offsets found for OM " << om_num << std::endl;
+            }
+
+            // Recalculate baseline, stddev, and eom over the full waveform (if needed)
+            baseline_end = calculate_baseline48(wave->at(j));
+            stddev_end   = calculate_stddev48(wave->at(j), baseline_end);
+            eom_end      = calculate_eom48(wave->at(j), baseline_end);
 
             // storing quality of fit assurance data ////////////////////////////////////////////////////
             // Clear previous event's data
-            mean_976.clear();
-            sigma_976.clear();
-            chi2ndf_976.clear();
+            mean_timeo.clear();
+            sigma_timeo.clear();
+            chi2ndf_timeo.clear();
 
             auto it_offset = mod16_offsets_per_om.find(om_num);
             auto it_sigma  = mod16_sigmas_per_om.find(om_num);
@@ -600,23 +702,23 @@ int main(){
                 it_sigma != mod16_sigmas_per_om.end() &&
                 it_chi2 != mod16_chi2ndf_per_om.end()) {
 
-                mean_976 = it_offset->second;
-                sigma_976 = it_sigma->second;
-                chi2ndf_976 = it_chi2->second;
+                mean_timeo = it_offset->second;
+                sigma_timeo = it_sigma->second;
+                chi2ndf_timeo = it_chi2->second;
 
             } else {
                 std::cerr << "Warning: Missing QA data for OM " << om_num << std::endl;
 
                 // Optionally fill with NaNs or -999 if QA data missing
-                mean_976.assign(16, -999);
-                sigma_976.assign(16, -999);
-                chi2ndf_976.assign(16, -999);
+                mean_timeo.assign(16, -999);
+                sigma_timeo.assign(16, -999);
+                chi2ndf_timeo.assign(16, -999);
             }
 
             // feb QA ///////////////////////////////////////////////////////////////
-            mean_feb.clear();
-            sigma_feb.clear();
-            chi2ndf_feb.clear();
+            mean_mem.clear();
+            sigma_mem.clear();
+            chi2ndf_mem.clear();
 
             auto it_feb_offset = feb_offsets_per_om.find(om_num);
             auto it_feb_sigma  = feb_sigmas_per_om.find(om_num);
@@ -626,17 +728,17 @@ int main(){
                 it_feb_sigma != feb_sigmas_per_om.end() &&
                 it_feb_chi2 != feb_chi2ndf_per_om.end()) {
 
-                mean_feb = it_feb_offset->second;
-                sigma_feb = it_feb_sigma->second;
-                chi2ndf_feb = it_feb_chi2->second;
+                mean_mem = it_feb_offset->second;
+                sigma_mem = it_feb_sigma->second;
+                chi2ndf_mem = it_feb_chi2->second;
 
             } else {
                 std::cerr << "Warning: Missing FEB QA data for OM " << om_num << std::endl;
 
                 // Optionally fill with NaNs or -999 if QA data missing
-                mean_feb.assign(1024, -999);
-                sigma_feb.assign(1024, -999);
-                chi2ndf_feb.assign(1024, -999);
+                mean_mem.assign(1024, -999);
+                sigma_mem.assign(1024, -999);
+                chi2ndf_mem.assign(1024, -999);
 
             }
             
