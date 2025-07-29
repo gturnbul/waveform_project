@@ -542,6 +542,10 @@ int main(){
         std::vector<double> spike_sigmas_om;
         std::vector<double> spike_chi2ndf_om;
 
+        auto it_mod16 = mod16_offsets_per_om.find(om_num);
+        const std::vector<double>& mod16_offsets = (it_mod16 != mod16_offsets_per_om.end()) ? it_mod16->second : std::vector<double>{};
+
+
         // Loop bins 976-1023 
         for (int bin = 976; bin <= 1023; ++bin) {
             std::vector<float>& adc_values_bin = adc_bins[bin];
@@ -564,8 +568,13 @@ int main(){
             int ndf = fit_func->GetNDF();
             double chi2_ndf = (ndf > 0) ? chi2 / ndf : -1;
 
+            // Calculate difference: spike mean - mod16 offset for (bin % 16)
+            int mod16_index = bin % 16;
+            double mod16_value = (mod16_index < (int)mod16_offsets.size()) ? mod16_offsets[mod16_index] : 0.0;
+            double corrected_spike_offset = mean - mod16_value;
+
             // Save results directly instead of computing mod16 offsets
-            spike_means_om.push_back(mean);
+            spike_means_om.push_back(corrected_spike_offset);
             spike_sigmas_om.push_back(sigma);
             spike_chi2ndf_om.push_back(chi2_ndf);
 
@@ -676,7 +685,14 @@ int main(){
                 for (int bin = 976; bin <= 1023; ++bin) {
                     int spike_bin_index = bin - 976;
                     if (spike_bin_index < (int)spike_offsets.size()) {
-                        wave->at(j)[bin] -= spike_offsets[spike_bin_index];
+                        wave->at(j)[bin] -= spike_offsets[spike_bin_index]; //remove eow spike to mod16 offset
+
+                        // Apply mod16 offset to spike-corrected bin
+                        auto it_mod16 = mod16_offsets_per_om.find(om_num);  
+                        if (it_mod16 != mod16_offsets_per_om.end()) {
+                            const std::vector<double>& offsets = it_mod16->second;
+                            wave->at(j)[bin] -= offsets[bin % 16];         // Apply mod16 offset
+                        }
                     }
                 }
             } else {
