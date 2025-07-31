@@ -47,6 +47,10 @@
 // Additional ROOT Utilities
 #include <TPaveText.h>
 #include <TArrayF.h>
+#include <unordered_map>
+#include <TVirtualFFT.h>
+#include <complex>
+#include <TComplex.h>
 
 // Macro Definition
 #define _USE_MATH_DEFINES
@@ -318,6 +322,7 @@ int main(){
     std::map<int, std::vector<double>> eow_offsets_per_om;
     std::map<int, std::vector<double>> eow_sigmas_per_om;
     std::map<int, std::vector<double>> eow_chi2ndf_per_om;
+    std::map<int, std::vector<double>> eow_gausses_per_om;
 
     //////////////////////////////////////////////////////////////////////////////////////
     ///////////////////// Finding and saving ADC_VAL range limit per OM //////////////////
@@ -541,6 +546,7 @@ int main(){
         std::vector<double> spike_means_om;
         std::vector<double> spike_sigmas_om;
         std::vector<double> spike_chi2ndf_om;
+        std::vector<double> spike_gaus_om;
 
         auto it_mod16 = mod16_offsets_per_om.find(om_num);
         const std::vector<double>& mod16_offsets = (it_mod16 != mod16_offsets_per_om.end()) ? it_mod16->second : std::vector<double>{};
@@ -574,6 +580,7 @@ int main(){
             double corrected_spike_offset = mean - mod16_value;
 
             // Save results directly instead of computing mod16 offsets
+            spike_gaus_om.push_back(mean);
             spike_means_om.push_back(corrected_spike_offset);
             spike_sigmas_om.push_back(sigma);
             spike_chi2ndf_om.push_back(chi2_ndf);
@@ -582,6 +589,7 @@ int main(){
             delete fit_func;
         }
         // Store the results for this OM
+        eow_gausses_per_om[om_num] = spike_gaus_om;
         eow_offsets_per_om[om_num] = spike_means_om;
         eow_sigmas_per_om[om_num] = spike_sigmas_om;
         eow_chi2ndf_per_om[om_num] = spike_chi2ndf_om;
@@ -608,6 +616,76 @@ int main(){
     }
     spike_csv_file.close();
 
+    /////////////////////////////// Nature of End Spike /////////////////////////////////////
+    // New: histogram to count crossings per bin, per OM
+    std::map<int, TH1I*> h_crossings_per_bin;
+
+    for (int i = 0; i < max_entries; ++i) {
+        tree->GetEntry(i);
+        if (i < 10) continue;
+
+        for (int j = 0; j < calo_nohits; ++j) {
+            if (wave->at(j).size() < 1024) continue;
+
+            int om_num = calculate_om_num(calo_type, calo_side, calo_wall, calo_column, calo_row, j);
+
+            // Initialize 1D crossing histogram if it doesn't exist
+            if (h_crossings_per_bin.find(om_num) == h_crossings_per_bin.end()) {
+                h_crossings_per_bin[om_num] = new TH1I(Form("crossings_om%d", om_num),
+                                                    Form("OM %d Mean Crossings Per Bin;Bin Number;#Crossings", om_num),
+                                                    48, 976, 1023); // one fewer because crossings are between bins
+            }
+
+            TH1I* h_cross = h_crossings_per_bin[om_num];
+            const auto& gaus_mean = eow_gausses_per_om[om_num];
+
+            for (int bin = 976; bin < 1023; ++bin) {
+                int idx = bin - 976;
+                float adc1 = wave->at(j)[bin];
+                float adc2 = wave->at(j)[bin + 1];
+
+                float mean1 = (idx < (int)gaus_mean.size())     ? gaus_mean[idx]     : 0.0;
+                float mean2 = ((idx + 1) < (int)gaus_mean.size()) ? gaus_mean[idx + 1] : 0.0;
+
+                float diff1 = adc1 - mean1;
+                float diff2 = adc2 - mean2;
+
+                // Detect a crossing between bin and bin+1
+                if (diff1 * diff2 < 0) {
+                    h_cross->Fill(bin);
+                }
+            }
+        }
+    }
+
+    // Save crossing histograms
+    for (auto& pair : h_crossings_per_bin) {
+        int om_num = pair.first;
+        TH1I* h_cross = pair.second;
+
+        TCanvas* c = new TCanvas(Form("c_crossings_om%d", om_num), "", 800, 600);
+        h_cross->SetStats(0);
+        h_cross->Draw("HIST");
+        c->SaveAs(Form("om%d_crossings_per_bin.png", om_num));
+
+        delete c;
+        delete h_cross;
+    }
+
+
+    //////////////////////////////////////////////////////////////////////////////////////
+
+
+    const int n = 1024;
+    const double sampling_freq_hz = 3.2e9;
+    const double freq_resolution_hz = sampling_freq_hz / n;
+    const int n_freqs = n / 2 + 1;
+
+    // Create 2D heatmap before event loop
+    TH2D* h_fft_heatmap = new TH2D("h_fft_heatmap",
+        "FFT Magnitude Heatmap for OM370;Frequency (MHz);Waveform Index",
+        n_freqs, 0, n_freqs * freq_resolution_hz / 1e6,
+        500, 0, 500);  // Adjust 500 to your max waveform count
 
 
     //////////////////////////////////////////////////////////////////////////////////////
@@ -671,6 +749,38 @@ int main(){
                 std::cerr << "Warning: No mod16 offsets found for OM " << om_num << std::endl;
             }
 
+            // Static counter to track saved mod16-corrected waveforms
+            static int saved_mod16_waveforms = 0;
+
+            if (saved_mod16_waveforms < 20) {
+                int n_bins = 976;
+
+                // Create canvas
+                TCanvas* c_mod16 = new TCanvas("c_mod16", "Mod16 Correction Region", 1200, 400);
+
+                // Create graph for mod16-corrected bins
+                TGraph* g_mod16 = new TGraph(n_bins);
+                for (int bin = 0; bin < n_bins; ++bin) {
+                    g_mod16->SetPoint(bin, bin, wave->at(j)[bin]);
+                }
+
+                g_mod16->SetTitle(Form("Mod16 Corrected Waveform Bins 0-975;Bin;ADC Count"));
+                g_mod16->SetMarkerStyle(0);
+                g_mod16->SetMarkerSize(1);
+                g_mod16->Draw("APL");
+
+                // Save plot as PNG, include event and waveform numbers
+                std::string filename = "waveform_mod16_corrected_event" + std::to_string(i) + "_waveform" + std::to_string(j) + ".png";
+                c_mod16->SaveAs(filename.c_str());
+
+                // Clean up
+                delete g_mod16;
+                delete c_mod16;
+
+                saved_mod16_waveforms++;  // Increment count
+            }
+
+
             // Calculate adjusted baseline, stddev, and eom
             baseline_976 = calculate_baseline976(wave->at(j));
             stddev_976 = calculate_stddev976(wave->at(j), baseline_976);
@@ -698,6 +808,42 @@ int main(){
             } else {
                 std::cerr << "Warning: No spike offsets found for OM " << om_num << std::endl;
             }
+
+            // Static counter to track saved waveforms
+            static int saved_wave_snippets = 0;
+
+            if (saved_wave_snippets < 20) {
+                // --- Plot and save corrected bins 976-1023 as PNG ---
+                int start_bin = 976;
+                int end_bin = 1023;
+                int n_bins = end_bin - start_bin + 1;
+
+                // Create canvas
+                TCanvas* c_spike = new TCanvas("c_spike", "Spike Region Correction", 800, 400);
+
+                // Create graph for corrected bins
+                TGraph* g_spike = new TGraph(n_bins);
+                for (int i = 0; i < n_bins; ++i) {
+                    int bin = start_bin + i;
+                    g_spike->SetPoint(i, bin, wave->at(j)[bin]);
+                }
+
+                g_spike->SetTitle(Form("Corrected Waveform Bins %d-%d;Bin;ADC Count", start_bin, end_bin));
+                g_spike->SetMarkerStyle(0);
+                g_spike->SetMarkerSize(1);
+                g_spike->Draw("APL");
+
+                // Save plot as PNG, including event and waveform IDs for clarity
+                std::string filename = "waveform_spike_corrected_event" + std::to_string(i) + "_waveform" + std::to_string(j) + ".png";
+                c_spike->SaveAs(filename.c_str());
+
+                // Clean up
+                delete g_spike;
+                delete c_spike;
+
+                saved_wave_snippets++;  // increment saved count
+            }
+
 
             // Recalculate baseline, stddev, and eom over the full waveform (if needed)
             baseline_end = calculate_baseline48(wave->at(j));
@@ -758,7 +904,73 @@ int main(){
 
             }
             
-            // Fill the tree 
+            //////////////////////////////////////////////////////////////////////////////////////
+            ////////////////////////////////  Fourier Analysis  //////////////////////////////////
+            //////////////////////////////////////////////////////////////////////////////////////
+            //compile the mod16 and end of spike for full adjusted waveformß
+            const auto& final_wave = wave->at(j);
+
+            // Perform Fourier transform
+            static int saved_waveforms = 0;
+            if (saved_waveforms < 10) {
+
+                const int n = 1024;
+                const double sampling_freq_hz = 3.2e9;  // 3.2 GHz
+                const double freq_resolution_hz = sampling_freq_hz / n;  // 3.125 MHz
+                const int n_freqs = n / 2 + 1;  // Real-to-complex FFT
+                int ndim[] = {n};   // Number of bins in the time domain
+
+                // Create canvas
+                TCanvas* c = new TCanvas("c", "Fourier Analysis", 1200, 600);
+                c->Divide(1,2); // top: time domain, bottom: frequency domain
+
+                // --- Time domain plot ---
+                c->cd(1);
+                TGraph* g_time = new TGraph(n);
+                for (int b = 0; b < n; ++b)
+                    g_time->SetPoint(b, b, final_wave[b]);
+                g_time->SetTitle("Time Domain;Bin;ADC Count");
+                g_time->Draw("AL");
+
+                // --- Fourier Transform ---
+                TVirtualFFT::SetTransform(0);
+                TVirtualFFT* fft = TVirtualFFT::FFT(1, ndim, "R2C EX K");
+
+                double* in = new double[n];
+                for (int i = 0; i < n; ++i)
+                    in[i] = final_wave[i];
+
+                fft->SetPoints(in);
+                fft->Transform();
+
+                // --- Frequency domain plot (with physical frequency axis in MHz) ---
+                c->cd(2);
+                TH1D* h_freq = new TH1D("h_freq", "Frequency Domain;Frequency (MHz);Magnitude", n_freqs, 0, n_freqs * freq_resolution_hz / 1e6);  // MHz scale
+
+                double re, im, mag;
+                for (int k = 0; k < n_freqs; ++k) {
+                    fft->GetPointComplex(k, re, im);
+                    mag = sqrt(re * re + im * im);
+                    h_freq->SetBinContent(k + 1, mag);
+                }
+
+                h_freq->Draw();
+
+                // --- Save ---
+                std::string filename = "waveform_fft_" + std::to_string(saved_waveforms) + ".png";
+                c->SaveAs(filename.c_str());
+
+                // --- Cleanup ---
+                delete[] in;
+                delete g_time;
+                delete h_freq;
+                delete fft;
+                delete c;
+
+                saved_waveforms++;
+            }
+
+            ////////////////////////// Fill the Baseline Tree ////////////////////////////
             baseline_tree->Fill();
         } 
     }
