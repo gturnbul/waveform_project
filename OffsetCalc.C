@@ -51,6 +51,10 @@
 #include <TVirtualFFT.h>
 #include <complex>
 #include <TComplex.h>
+#include <map>
+#include <vector>
+#include <cmath>
+#include <THStack.h>
 
 // Macro Definition
 #define _USE_MATH_DEFINES
@@ -324,6 +328,7 @@ int main(){
     std::map<int, std::vector<double>> eow_chi2ndf_per_om;
     std::map<int, std::vector<double>> eow_gausses_per_om;
 
+    static std::map<int, std::vector<std::vector<double>>> om_waveforms;
     //////////////////////////////////////////////////////////////////////////////////////
     ///////////////////// Finding and saving ADC_VAL range limit per OM //////////////////
     //////////////////////////////////////////////////////////////////////////////////////
@@ -616,78 +621,6 @@ int main(){
     }
     spike_csv_file.close();
 
-    /////////////////////////////// Nature of End Spike /////////////////////////////////////
-    // New: histogram to count crossings per bin, per OM
-    std::map<int, TH1I*> h_crossings_per_bin;
-
-    for (int i = 0; i < max_entries; ++i) {
-        tree->GetEntry(i);
-        if (i < 10) continue;
-
-        for (int j = 0; j < calo_nohits; ++j) {
-            if (wave->at(j).size() < 1024) continue;
-
-            int om_num = calculate_om_num(calo_type, calo_side, calo_wall, calo_column, calo_row, j);
-
-            // Initialize 1D crossing histogram if it doesn't exist
-            if (h_crossings_per_bin.find(om_num) == h_crossings_per_bin.end()) {
-                h_crossings_per_bin[om_num] = new TH1I(Form("crossings_om%d", om_num),
-                                                    Form("OM %d Mean Crossings Per Bin;Bin Number;#Crossings", om_num),
-                                                    48, 976, 1023); // one fewer because crossings are between bins
-            }
-
-            TH1I* h_cross = h_crossings_per_bin[om_num];
-            const auto& gaus_mean = eow_gausses_per_om[om_num];
-
-            for (int bin = 976; bin < 1023; ++bin) {
-                int idx = bin - 976;
-                float adc1 = wave->at(j)[bin];
-                float adc2 = wave->at(j)[bin + 1];
-
-                float mean1 = (idx < (int)gaus_mean.size())     ? gaus_mean[idx]     : 0.0;
-                float mean2 = ((idx + 1) < (int)gaus_mean.size()) ? gaus_mean[idx + 1] : 0.0;
-
-                float diff1 = adc1 - mean1;
-                float diff2 = adc2 - mean2;
-
-                // Detect a crossing between bin and bin+1
-                if (diff1 * diff2 < 0) {
-                    h_cross->Fill(bin);
-                }
-            }
-        }
-    }
-
-    // Save crossing histograms
-    for (auto& pair : h_crossings_per_bin) {
-        int om_num = pair.first;
-        TH1I* h_cross = pair.second;
-
-        TCanvas* c = new TCanvas(Form("c_crossings_om%d", om_num), "", 800, 600);
-        h_cross->SetStats(0);
-        h_cross->Draw("HIST");
-        c->SaveAs(Form("om%d_crossings_per_bin.png", om_num));
-
-        delete c;
-        delete h_cross;
-    }
-
-
-    //////////////////////////////////////////////////////////////////////////////////////
-
-
-    const int n = 1024;
-    const double sampling_freq_hz = 3.2e9;
-    const double freq_resolution_hz = sampling_freq_hz / n;
-    const int n_freqs = n / 2 + 1;
-
-    // Create 2D heatmap before event loop
-    TH2D* h_fft_heatmap = new TH2D("h_fft_heatmap",
-        "FFT Magnitude Heatmap for OM370;Frequency (MHz);Waveform Index",
-        n_freqs, 0, n_freqs * freq_resolution_hz / 1e6,
-        500, 0, 500);  // Adjust 500 to your max waveform count
-
-
     //////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////  Baseline Tree Fill /////////////////////////////////
     //////////////////////////////////////////////////////////////////////////////////////
@@ -907,75 +840,81 @@ int main(){
             //////////////////////////////////////////////////////////////////////////////////////
             ////////////////////////////////  Fourier Analysis  //////////////////////////////////
             //////////////////////////////////////////////////////////////////////////////////////
-            //compile the mod16 and end of spike for full adjusted waveformß
-            const auto& final_wave = wave->at(j);
 
-            // Perform Fourier transform
-            static int saved_waveforms = 0;
-            if (saved_waveforms < 10) {
+            // Convert waveform to vector<double>
+            std::vector<double> waveform_double(1024);
+            for (int bin = 0; bin < 1024; ++bin)
+                waveform_double[bin] = static_cast<double>(wave->at(j)[bin]);
 
-                const int n = 1024;
-                const double sampling_freq_hz = 3.2e9;  // 3.2 GHz
-                const double freq_resolution_hz = sampling_freq_hz / n;  // 3.125 MHz
-                const int n_freqs = n / 2 + 1;  // Real-to-complex FFT
-                int ndim[] = {n};   // Number of bins in the time domain
+            om_waveforms[om_num].push_back(waveform_double);
 
-                // Create canvas
-                TCanvas* c = new TCanvas("c", "Fourier Analysis", 1200, 600);
-                c->Divide(1,2); // top: time domain, bottom: frequency domain
-
-                // --- Time domain plot ---
-                c->cd(1);
-                TGraph* g_time = new TGraph(n);
-                for (int b = 0; b < n; ++b)
-                    g_time->SetPoint(b, b, final_wave[b]);
-                g_time->SetTitle("Time Domain;Bin;ADC Count");
-                g_time->Draw("AL");
-
-                // --- Fourier Transform ---
-                TVirtualFFT::SetTransform(0);
-                TVirtualFFT* fft = TVirtualFFT::FFT(1, ndim, "R2C EX K");
-
-                double* in = new double[n];
-                for (int i = 0; i < n; ++i)
-                    in[i] = final_wave[i];
-
-                fft->SetPoints(in);
-                fft->Transform();
-
-                // --- Frequency domain plot (with physical frequency axis in MHz) ---
-                c->cd(2);
-                TH1D* h_freq = new TH1D("h_freq", "Frequency Domain;Frequency (MHz);Magnitude", n_freqs, 0, n_freqs * freq_resolution_hz / 1e6);  // MHz scale
-
-                double re, im, mag;
-                for (int k = 0; k < n_freqs; ++k) {
-                    fft->GetPointComplex(k, re, im);
-                    mag = sqrt(re * re + im * im);
-                    h_freq->SetBinContent(k + 1, mag);
-                }
-
-                h_freq->Draw();
-
-                // --- Save ---
-                std::string filename = "waveform_fft_" + std::to_string(saved_waveforms) + ".png";
-                c->SaveAs(filename.c_str());
-
-                // --- Cleanup ---
-                delete[] in;
-                delete g_time;
-                delete h_freq;
-                delete fft;
-                delete c;
-
-                saved_waveforms++;
-            }
 
             ////////////////////////// Fill the Baseline Tree ////////////////////////////
             baseline_tree->Fill();
         } 
     }
-    
 
+        // NOW do this, once:
+        const int n = 1024;
+        const double sampling_freq_hz = 3.2e9;
+        const double freq_resolution_hz = sampling_freq_hz / n;
+        const int n_freqs = n / 2 + 1;
+        int ndim[] = {n};
+
+        for (const auto& [om_id, waveforms] : om_waveforms) {
+            TMultiGraph* mg_time = new TMultiGraph();
+            THStack* stack_freq = new THStack(Form("freq_stack_om%d", om_id), "");
+
+            for (const auto& waveform : waveforms) {
+                // --- Time domain graph ---
+                TGraph* g = new TGraph(n);
+                for (int b = 0; b < n; ++b)
+                    g->SetPoint(b, b, waveform[b]);
+                g->SetLineColorAlpha(kBlue, 0.05);
+                g->SetLineWidth(1);
+                mg_time->Add(g);
+
+                // --- Fourier Transform ---
+                TVirtualFFT::SetTransform(0);
+                TVirtualFFT* fft = TVirtualFFT::FFT(1, ndim, "R2C EX K");
+                double* in = new double[n];
+                for (int i = 0; i < n; ++i)
+                    in[i] = waveform[i];
+                fft->SetPoints(in);
+                fft->Transform();
+
+                TH1D* h = new TH1D("", "", n_freqs, 0, n_freqs * freq_resolution_hz / 1e6);
+                for (int k = 0; k < n_freqs; ++k) {
+                    double re, im;
+                    fft->GetPointComplex(k, re, im);
+                    double mag = sqrt(re * re + im * im);
+                    h->SetBinContent(k + 1, mag);
+                }
+
+                h->SetLineColorAlpha(kRed, 0.05);
+                h->SetLineWidth(1);
+                stack_freq->Add(h);
+
+                delete fft;
+                delete[] in;
+            }
+
+            // --- Draw and save ---
+            TCanvas* c = new TCanvas(Form("c_om%d", om_id), "OM Waveform Overlay", 1200, 600);
+            c->Divide(1, 2);
+
+            c->cd(1);
+            mg_time->Draw("AL");
+            mg_time->SetTitle(Form("OM %d - Time Domain;Bin;ADC Count", om_id));
+
+            c->cd(2);
+            stack_freq->Draw("NOSTACK HIST");
+            stack_freq->GetXaxis()->SetTitle("Frequency (MHz)");
+            stack_freq->GetYaxis()->SetTitle("Magnitude");
+
+            c->SaveAs(Form("fft_overlay_OM%03d.png", om_id));
+            delete c;
+        }
     //////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////// End of code, writes and closes ////////////////////////////
     //////////////////////////////////////////////////////////////////////////////////////
