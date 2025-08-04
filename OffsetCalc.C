@@ -219,7 +219,6 @@ std::vector<short> inverse_reorder_waveform(const std::vector<short>& reordered,
     return original;
 }
 
-
 //////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////  Main ///////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////
@@ -254,7 +253,7 @@ int main(){
     int max_entries = tree->GetEntries();
 
     // Create output ROOT file and TTree for baseline data
-    TFile *outfile = new TFile("baseline_offset_calc_1143.root", "RECREATE");
+    TFile *outfile = new TFile("baseline_offset_calc_FFTNotch_1143.root", "RECREATE");
     TTree *baseline_tree = new TTree("baseline_tree", "OM baseline data");
 
     // Initialise output variables
@@ -643,6 +642,73 @@ int main(){
             baseline_orig = calculate_baseline976(wave->at(j));
             stddev_orig = calculate_stddev976(wave->at(j), baseline_orig);
             eom_orig = calculate_eom976(wave->at(j), baseline_orig);
+            
+            ////////////////////////////////////// FOURIER NOTCH FILTERING ///////////////////////////////////////
+            // Convert waveform to double precision for FFT input
+            std::vector<double> waveform_double(1024);
+            for (int bin = 0; bin < 1024; ++bin) {
+                waveform_double[bin] = static_cast<double>(wave->at(j)[bin]);
+            }
+            
+            // Convert to double for FFT
+            int N = 1024;
+            double fs = 3.2e9;  // sampling freq Hz
+            int n_freqs = N / 2 + 1;
+
+            // FFT
+            TVirtualFFT::SetTransform(0);
+            TVirtualFFT* fft = TVirtualFFT::FFT(1, &N, "R2C EX K");
+            fft->SetPoints(&waveform_double[0]);
+            fft->Transform();
+
+            std::vector<TComplex> freq_domain_before(n_freqs);
+            for (int k = 0; k < n_freqs; ++k) {
+                double re, im;
+                fft->GetPointComplex(k, re, im);
+                freq_domain_before[k] = TComplex(re, im);
+            }
+
+            // Notch filter
+            std::vector<TComplex> freq_domain = freq_domain_before;
+            std::vector<double> notch_freqs = {132, 201, 401, 601, 801, 1001, 1201, 1401};
+            std::vector<int> notch_bins;
+            for (double f : notch_freqs) {
+                int bin = static_cast<int>(round(f * 1e6 * N / fs));
+                if (bin >= 0 && bin < n_freqs) notch_bins.push_back(bin);
+            }
+            for (int bin : notch_bins) {
+                freq_domain[bin] = TComplex(0.0, 0.0);
+                if (bin != 0 && bin != n_freqs - 1) {
+                    int sym_bin = N - bin;
+                    if (sym_bin < n_freqs) freq_domain[sym_bin] = TComplex(0.0, 0.0);
+                }
+            }
+
+            // Inverse FFT
+            TVirtualFFT* ifft = TVirtualFFT::FFT(1, &N, "C2R EX K");
+            for (int k = 0; k < n_freqs; ++k) {
+                ifft->SetPointComplex(k, freq_domain[k]);
+            }
+            ifft->Transform();
+
+            double* filtered = new double[N];
+            ifft->GetPoints(filtered);
+
+            // Normalize filtered waveform
+            std::vector<double> filtered_wave(N);
+            for (int bin = 0; bin < N; ++bin) {
+                filtered_wave[bin] = filtered[bin] / N;
+            }
+
+            delete[] filtered;
+            delete fft;
+            delete ifft;
+
+
+            // Convert the filtered waveform back to short integers
+            for (int bin = 0; bin < 1024; ++bin) {
+                wave->at(j)[bin] = static_cast<short>(std::round(filtered_wave[bin]));
+            }
 
             // only include waveforms where the eom is less than 0.076
             if (eom_orig > 0.076) continue;
@@ -839,126 +905,145 @@ int main(){
 
             }
             
-            //////////////////////////////////////////////////////////////////////////////////////
-            ////////////////////////////////  Fourier Analysis  //////////////////////////////////
-            //////////////////////////////////////////////////////////////////////////////////////
-
-            // Convert waveform to vector<double>
-            std::vector<double> waveform_double(1024);
-            for (int bin = 0; bin < 1024; ++bin)
-                waveform_double[bin] = static_cast<double>(wave->at(j)[bin]);
-
-            om_waveforms[om_num].push_back(waveform_double);
-
-
+            
             ////////////////////////// Fill the Baseline Tree ////////////////////////////
             baseline_tree->Fill();
         } 
     }
+    int max_visualizations = 20;
+    int visualized = 0;
 
-    const int n = 1024;
-    const double sampling_freq_hz = 3.2e9;
-    const double freq_resolution_hz = sampling_freq_hz / n;
-    const int n_freqs = n / 2 + 1;
-    int ndim[] = {n};
+    for (int i = 0; i < max_entries && visualized < max_visualizations; ++i) {
+        tree->GetEntry(i);
 
-    // Global time and frequency containers
-    TMultiGraph* mg_time_global = new TMultiGraph();
-    THStack* stack_freq_global = new THStack("global_freq_stack", "");
+        for (int j = 0; j < calo_nohits && visualized < max_visualizations; ++j) {
+            if (wave->at(j).size() < 1024) continue;
 
-    TFile* peak_file = new TFile("fft_peaks.root", "RECREATE");
-    TTree* peak_tree = new TTree("fft_peaks", "Fourier Transform Peak Frequencies");
+            // Copy original waveform
+            std::vector<short> original_wave = wave->at(j);
 
-    int om_id_branch;
-    std::vector<double> peak_freqs;
-    peak_tree->Branch("om_id", &om_id_branch);
-    peak_tree->Branch("peak_freqs", &peak_freqs);
+            // Convert to double for FFT
+            int N = 1024;
+            double fs = 3.2e9;  // sampling freq Hz
+            int n_freqs = N / 2 + 1;
+            std::vector<double> waveform_double(N);
+            for (int bin = 0; bin < N; ++bin) {
+                waveform_double[bin] = static_cast<double>(original_wave[bin]);
+            }
 
-
-    for (const auto& [om_id, waveforms] : om_waveforms) {
-        for (const auto& waveform : waveforms) {
-            // --- Time domain graph ---
-            TGraph* g = new TGraph(n);
-            for (int b = 0; b < n; ++b)
-                g->SetPoint(b, b, waveform[b]);
-            g->SetLineColorAlpha(kBlue, 0.02);  // lighter for more overlay
-            g->SetLineWidth(1);
-            mg_time_global->Add(g);
-
-            // --- Fourier Transform ---
+            // FFT
             TVirtualFFT::SetTransform(0);
-            TVirtualFFT* fft = TVirtualFFT::FFT(1, ndim, "R2C EX K");
-            double* in = new double[n];
-            for (int i = 0; i < n; ++i)
-                in[i] = waveform[i];
-            fft->SetPoints(in);
+            TVirtualFFT* fft = TVirtualFFT::FFT(1, &N, "R2C EX K");
+            fft->SetPoints(&waveform_double[0]);
             fft->Transform();
 
-            TH1D* h = new TH1D("", "", n_freqs, 0, n_freqs * freq_resolution_hz / 1e6);  // in MHz
+            std::vector<TComplex> freq_domain_before(n_freqs);
             for (int k = 0; k < n_freqs; ++k) {
                 double re, im;
                 fft->GetPointComplex(k, re, im);
-                double mag = sqrt(re * re + im * im);
-                h->SetBinContent(k + 1, mag);
+                freq_domain_before[k] = TComplex(re, im);
             }
-            // --- Peak detection ---
-            const int max_peaks = 10;
-            TSpectrum spectrum(max_peaks);
-            int n_peaks = spectrum.Search(h, 2, "", 0.1); // tune parameters
 
-           double* xpeaks = spectrum.GetPositionX();  
-
-            peak_freqs.clear();
-
-            for (int p = 0; p < n_peaks; ++p) {
-                double freq_mhz = xpeaks[p];               // X-position = frequency (in MHz)
-                int bin = h->FindBin(freq_mhz);            // Find histogram bin corresponding to that frequency
-                double amp = h->GetBinContent(bin);        // Get the magnitude at that bin
-
-                if (amp > 150) {
-                    peak_freqs.push_back(freq_mhz);        // Only keep this peak if it's strong enough
+            // Notch filter
+            std::vector<TComplex> freq_domain = freq_domain_before;
+            std::vector<double> notch_freqs = {132, 201, 401, 601, 801, 1001, 1201, 1401};
+            std::vector<int> notch_bins;
+            for (double f : notch_freqs) {
+                int bin = static_cast<int>(round(f * 1e6 * N / fs));
+                if (bin >= 0 && bin < n_freqs) notch_bins.push_back(bin);
+            }
+            for (int bin : notch_bins) {
+                freq_domain[bin] = TComplex(0.0, 0.0);
+                if (bin != 0 && bin != n_freqs - 1) {
+                    int sym_bin = N - bin;
+                    if (sym_bin < n_freqs) freq_domain[sym_bin] = TComplex(0.0, 0.0);
                 }
             }
 
+            // Inverse FFT
+            TVirtualFFT* ifft = TVirtualFFT::FFT(1, &N, "C2R EX K");
+            for (int k = 0; k < n_freqs; ++k) {
+                ifft->SetPointComplex(k, freq_domain[k]);
+            }
+            ifft->Transform();
 
-            std::cout << "OM " << om_id << " FFT Peaks (MHz): ";
-            for (double f : peak_freqs) std::cout << f << ", ";
-            std::cout << std::endl;
+            double* filtered = new double[N];
+            ifft->GetPoints(filtered);
 
-            // Fill the tree
-            om_id_branch = om_id;
-            peak_tree->Fill();
+            // Normalize filtered waveform
+            std::vector<double> filtered_wave(N);
+            for (int bin = 0; bin < N; ++bin) {
+                filtered_wave[bin] = filtered[bin] / N;
+            }
 
-
-            h->SetLineColorAlpha(kRed, 0.02);  // lighter line for frequency plots
-            h->SetLineWidth(1);
-            stack_freq_global->Add(h);
-
+            delete[] filtered;
             delete fft;
-            delete[] in;
+            delete ifft;
+
+            // Calculate FFT magnitudes for plotting
+            auto complexMagnitude = [](const TComplex& c) {
+                return std::sqrt(c.Re()*c.Re() + c.Im()*c.Im());
+            };
+            std::vector<double> fft_mag_before(n_freqs);
+            std::vector<double> fft_mag_after(n_freqs);
+            for (int k = 0; k < n_freqs; ++k) {
+                fft_mag_before[k] = complexMagnitude(freq_domain_before[k]);
+                fft_mag_after[k] = complexMagnitude(freq_domain[k]);
+            }
+
+            // Plotting
+            TCanvas* c = new TCanvas(Form("c_evt%d_wave%d", i, j), "Waveform and FFT", 1200, 900);
+            c->Divide(2, 2);
+
+            // Original waveform
+            c->cd(1);
+            TGraph* g_orig = new TGraph(N);
+            for (int bin = 0; bin < N; ++bin) g_orig->SetPoint(bin, bin, original_wave[bin]);
+            g_orig->SetTitle("Original Waveform;Bin;ADC");
+            // Remove marker style
+            g_orig->Draw("AL");  // Draw only axes and line (no points)
+
+            // FFT magnitude before filtering (log scale Y)
+            c->cd(2);
+            TGraph* g_fft_before = new TGraph(n_freqs);
+            for (int k = 0; k < n_freqs; ++k)
+                g_fft_before->SetPoint(k, k * fs / N / 1e6, fft_mag_before[k]);
+            g_fft_before->SetTitle("FFT Magnitude Before Notch Filter;Frequency (MHz);Magnitude");
+            gPad->SetLogy(1);  // Set log scale on Y axis
+            g_fft_before->Draw("AL");
+
+            // FFT magnitude after filtering (log scale Y)
+            c->cd(3);
+            TGraph* g_fft_after = new TGraph(n_freqs);
+            for (int k = 0; k < n_freqs; ++k)
+                g_fft_after->SetPoint(k, k * fs / N / 1e6, fft_mag_after[k]);
+            g_fft_after->SetTitle("FFT Magnitude After Notch Filter;Frequency (MHz);Magnitude");
+            gPad->SetLogy(1);  // Set log scale on Y axis
+            g_fft_after->Draw("AL");
+
+            // Filtered waveform
+            c->cd(4);
+            TGraph* g_filtered = new TGraph(N);
+            for (int bin = 0; bin < N; ++bin) g_filtered->SetPoint(bin, bin, filtered_wave[bin]);
+            g_filtered->SetTitle("Filtered Waveform;Bin;ADC");
+            // Remove marker style
+            g_filtered->Draw("AL");
+
+
+            // Save canvas to PNG
+            c->SaveAs(Form("visualization_event%d_waveform%d.png", i, j));
+
+            // Cleanup
+            delete g_orig;
+            delete g_fft_before;
+            delete g_fft_after;
+            delete g_filtered;
+            delete c;
+
+            visualized++;
         }
     }
 
-    // --- Draw and save global overlays ---
-    TCanvas* c_global = new TCanvas("c_global", "Global Waveform and FFT Overlay", 1200, 600);
-    c_global->Divide(1, 2);
-
-    c_global->cd(1);
-    mg_time_global->Draw("AL");
-    mg_time_global->SetTitle("Global - Time Domain;Bin;ADC Count");
-
-    c_global->cd(2);
-    stack_freq_global->Draw("NOSTACK HIST");
-    stack_freq_global->GetXaxis()->SetTitle("Frequency (MHz)");
-    stack_freq_global->GetYaxis()->SetTitle("Magnitude");
-
-    c_global->SaveAs("fft_overlay_global.png");
-    delete c_global;
-
-    // Save the peak tree
-    peak_file->cd();
-    peak_tree->Write();
-    peak_file->Close();
 
     //////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////// End of code, writes and closes ////////////////////////////
