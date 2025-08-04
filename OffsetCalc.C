@@ -56,6 +56,8 @@
 #include <cmath>
 #include <THStack.h>
 
+#include "TSpectrum.h"
+
 // Macro Definition
 #define _USE_MATH_DEFINES
 
@@ -854,67 +856,110 @@ int main(){
         } 
     }
 
-        // NOW do this, once:
-        const int n = 1024;
-        const double sampling_freq_hz = 3.2e9;
-        const double freq_resolution_hz = sampling_freq_hz / n;
-        const int n_freqs = n / 2 + 1;
-        int ndim[] = {n};
+    const int n = 1024;
+    const double sampling_freq_hz = 3.2e9;
+    const double freq_resolution_hz = sampling_freq_hz / n;
+    const int n_freqs = n / 2 + 1;
+    int ndim[] = {n};
 
-        for (const auto& [om_id, waveforms] : om_waveforms) {
-            TMultiGraph* mg_time = new TMultiGraph();
-            THStack* stack_freq = new THStack(Form("freq_stack_om%d", om_id), "");
+    // Global time and frequency containers
+    TMultiGraph* mg_time_global = new TMultiGraph();
+    THStack* stack_freq_global = new THStack("global_freq_stack", "");
 
-            for (const auto& waveform : waveforms) {
-                // --- Time domain graph ---
-                TGraph* g = new TGraph(n);
-                for (int b = 0; b < n; ++b)
-                    g->SetPoint(b, b, waveform[b]);
-                g->SetLineColorAlpha(kBlue, 0.05);
-                g->SetLineWidth(1);
-                mg_time->Add(g);
+    TFile* peak_file = new TFile("fft_peaks.root", "RECREATE");
+    TTree* peak_tree = new TTree("fft_peaks", "Fourier Transform Peak Frequencies");
 
-                // --- Fourier Transform ---
-                TVirtualFFT::SetTransform(0);
-                TVirtualFFT* fft = TVirtualFFT::FFT(1, ndim, "R2C EX K");
-                double* in = new double[n];
-                for (int i = 0; i < n; ++i)
-                    in[i] = waveform[i];
-                fft->SetPoints(in);
-                fft->Transform();
+    int om_id_branch;
+    std::vector<double> peak_freqs;
+    peak_tree->Branch("om_id", &om_id_branch);
+    peak_tree->Branch("peak_freqs", &peak_freqs);
 
-                TH1D* h = new TH1D("", "", n_freqs, 0, n_freqs * freq_resolution_hz / 1e6);
-                for (int k = 0; k < n_freqs; ++k) {
-                    double re, im;
-                    fft->GetPointComplex(k, re, im);
-                    double mag = sqrt(re * re + im * im);
-                    h->SetBinContent(k + 1, mag);
+
+    for (const auto& [om_id, waveforms] : om_waveforms) {
+        for (const auto& waveform : waveforms) {
+            // --- Time domain graph ---
+            TGraph* g = new TGraph(n);
+            for (int b = 0; b < n; ++b)
+                g->SetPoint(b, b, waveform[b]);
+            g->SetLineColorAlpha(kBlue, 0.02);  // lighter for more overlay
+            g->SetLineWidth(1);
+            mg_time_global->Add(g);
+
+            // --- Fourier Transform ---
+            TVirtualFFT::SetTransform(0);
+            TVirtualFFT* fft = TVirtualFFT::FFT(1, ndim, "R2C EX K");
+            double* in = new double[n];
+            for (int i = 0; i < n; ++i)
+                in[i] = waveform[i];
+            fft->SetPoints(in);
+            fft->Transform();
+
+            TH1D* h = new TH1D("", "", n_freqs, 0, n_freqs * freq_resolution_hz / 1e6);  // in MHz
+            for (int k = 0; k < n_freqs; ++k) {
+                double re, im;
+                fft->GetPointComplex(k, re, im);
+                double mag = sqrt(re * re + im * im);
+                h->SetBinContent(k + 1, mag);
+            }
+            // --- Peak detection ---
+            const int max_peaks = 10;
+            TSpectrum spectrum(max_peaks);
+            int n_peaks = spectrum.Search(h, 2, "", 0.1); // tune parameters
+
+           double* xpeaks = spectrum.GetPositionX();  
+
+            peak_freqs.clear();
+
+            for (int p = 0; p < n_peaks; ++p) {
+                double freq_mhz = xpeaks[p];               // X-position = frequency (in MHz)
+                int bin = h->FindBin(freq_mhz);            // Find histogram bin corresponding to that frequency
+                double amp = h->GetBinContent(bin);        // Get the magnitude at that bin
+
+                if (amp > 150) {
+                    peak_freqs.push_back(freq_mhz);        // Only keep this peak if it's strong enough
                 }
-
-                h->SetLineColorAlpha(kRed, 0.05);
-                h->SetLineWidth(1);
-                stack_freq->Add(h);
-
-                delete fft;
-                delete[] in;
             }
 
-            // --- Draw and save ---
-            TCanvas* c = new TCanvas(Form("c_om%d", om_id), "OM Waveform Overlay", 1200, 600);
-            c->Divide(1, 2);
 
-            c->cd(1);
-            mg_time->Draw("AL");
-            mg_time->SetTitle(Form("OM %d - Time Domain;Bin;ADC Count", om_id));
+            std::cout << "OM " << om_id << " FFT Peaks (MHz): ";
+            for (double f : peak_freqs) std::cout << f << ", ";
+            std::cout << std::endl;
 
-            c->cd(2);
-            stack_freq->Draw("NOSTACK HIST");
-            stack_freq->GetXaxis()->SetTitle("Frequency (MHz)");
-            stack_freq->GetYaxis()->SetTitle("Magnitude");
+            // Fill the tree
+            om_id_branch = om_id;
+            peak_tree->Fill();
 
-            c->SaveAs(Form("fft_overlay_OM%03d.png", om_id));
-            delete c;
+
+            h->SetLineColorAlpha(kRed, 0.02);  // lighter line for frequency plots
+            h->SetLineWidth(1);
+            stack_freq_global->Add(h);
+
+            delete fft;
+            delete[] in;
         }
+    }
+
+    // --- Draw and save global overlays ---
+    TCanvas* c_global = new TCanvas("c_global", "Global Waveform and FFT Overlay", 1200, 600);
+    c_global->Divide(1, 2);
+
+    c_global->cd(1);
+    mg_time_global->Draw("AL");
+    mg_time_global->SetTitle("Global - Time Domain;Bin;ADC Count");
+
+    c_global->cd(2);
+    stack_freq_global->Draw("NOSTACK HIST");
+    stack_freq_global->GetXaxis()->SetTitle("Frequency (MHz)");
+    stack_freq_global->GetYaxis()->SetTitle("Magnitude");
+
+    c_global->SaveAs("fft_overlay_global.png");
+    delete c_global;
+
+    // Save the peak tree
+    peak_file->cd();
+    peak_tree->Write();
+    peak_file->Close();
+
     //////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////// End of code, writes and closes ////////////////////////////
     //////////////////////////////////////////////////////////////////////////////////////
