@@ -165,8 +165,14 @@ Mod16Stats compute_mod16_from_fits(const std::vector<double>& means,
         int mod16_index = i % 16;
         mean_acc[mod16_index] += means[i];
         sigma_acc[mod16_index] += sigmas[i];
-        chi2ndf_acc[mod16_index] += chi2ndfs[i];
-        counts[mod16_index]++;
+        if (chi2ndfs[i] >= 0) {
+            chi2ndf_acc[mod16_index] += chi2ndfs[i];
+            counts[mod16_index]++;
+            } else {
+                static std::ofstream badfit_log("bad_fits_mod16.csv", std::ios::app);
+                badfit_log << "OM_UNKNOWN," << i << ",ndf=0" << std::endl;  
+                // If you want OM numbers, pass it in as an argument
+        }
     }
 
     for (int i = 0; i < 16; ++i) {
@@ -253,8 +259,10 @@ int main(){
     int max_entries = tree->GetEntries();
 
     // Create output ROOT file and TTree for baseline data
-    TFile *outfile = new TFile("baseline_offset_calc_FFTNotch_1143.root", "RECREATE");
+    TFile *outfile = new TFile("baseline_offset_calc_1143.root", "RECREATE");
     TTree *baseline_tree = new TTree("baseline_tree", "OM baseline data");
+
+    TTree *qaTree = new TTree("qaTree", "FEB/Wavecatcher QA");
 
     // Initialise output variables
     int event_num = -1;
@@ -262,6 +270,9 @@ int main(){
     double baseline_orig = 0;
     double stddev_orig = 0;
     double eom_orig = 0;
+    double end_baseline = 0;
+    double end_stddev = 0;
+    double end_eom = 0;
 
     // Variables for the 1024 FEB offset correction
     double baseline_feb = 0;
@@ -278,6 +289,11 @@ int main(){
     double stddev_end = 0;
     double eom_end = 0;
 
+    // FFT variables
+    double baseline_fft = 0;
+    double stddev_fft = 0;
+    double eom_fft = 0;
+
     //Quality assurance variables
     std::vector<double> mean_mem;
     std::vector<double> sigma_mem;
@@ -293,6 +309,9 @@ int main(){
     baseline_tree->Branch("baseline", &baseline_orig, "baseline/D");
     baseline_tree->Branch("stddev", &stddev_orig, "stddev/D");
     baseline_tree->Branch("eom", &eom_orig, "eom/D");
+    baseline_tree->Branch("end_baseline", &end_baseline, "end_baseline/D");
+    baseline_tree->Branch("end_stddev", &end_stddev, "end_stddev/D");
+    baseline_tree->Branch("end_eom", &end_eom, "end_eom/D");
 
     baseline_tree->Branch("baseline_feb", &baseline_feb, "baseline_feb/D");
     baseline_tree->Branch("stddev_feb", &stddev_feb, "stddev_feb/D");
@@ -306,18 +325,25 @@ int main(){
     baseline_tree->Branch("stddev_end", &stddev_end, "stddev_end/D");
     baseline_tree->Branch("eom_end", &eom_end, "eom_end/D");
 
-    baseline_tree->Branch("mean_mem", &mean_mem);
-    baseline_tree->Branch("sigma_mem", &sigma_mem);
-    baseline_tree->Branch("chi2ndf_mem", &chi2ndf_mem);    
+    baseline_tree->Branch("baseline_fft", &baseline_fft, "baseline_fft/D");
+    baseline_tree->Branch("stddev_fft", &stddev_fft, "stddev_fft/D");
+    baseline_tree->Branch("eom_fft", &eom_fft, "eom_fft/D");
+
+    qaTree->Branch("om_num", &om_num, "om_num/I");
+    qaTree->Branch("mean_mem", &mean_mem);
+    qaTree->Branch("sigma_mem", &sigma_mem);
+    qaTree->Branch("chi2ndf_mem", &chi2ndf_mem);    
     
-    baseline_tree->Branch("mean_timeo", &mean_timeo);
-    baseline_tree->Branch("sigma_timeo", &sigma_timeo);
-    baseline_tree->Branch("chi2ndf_timeo", &chi2ndf_timeo);
+    qaTree->Branch("mean_timeo", &mean_timeo);
+    qaTree->Branch("sigma_timeo", &sigma_timeo);
+    qaTree->Branch("chi2ndf_timeo", &chi2ndf_timeo);
+
     //////////////////////////// MAPS ////////////////////////////////////////
     std::map<int, std::vector<std::vector<float>>> adc_values;
     std::map<int, std::vector<double>> mod16_offsets_per_om;
     std::map<int, std::vector<double>> mod16_sigmas_per_om;
     std::map<int, std::vector<double>> mod16_chi2ndf_per_om;
+    std::map<int, std::vector<double>> mod16_data_per_om;
 
     std::map<int, std::vector<std::vector<float>>> feb_adc_values;
     std::map<int, std::vector<double>> feb_offsets_per_om;
@@ -349,6 +375,7 @@ int main(){
                 stddev_orig = calculate_stddev976(wave->at(j), baseline_orig);
                 eom_orig = calculate_eom976(wave->at(j), baseline_orig);
 
+
                 // only include waveforms where the eom is less than 0.076
                 if (eom_orig > 0.076) continue;
                 
@@ -377,11 +404,11 @@ int main(){
             }
     }
 
-    //////////////////////////////////////////////////////////////////////////////////////
-    ////////////////////////////// FEB Calclulations /////////////////////////////////////
-    //////////////////////////////////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////////////////////
+    //////////////////////////// FEB Calclulations /////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////////////////////
     std::ofstream csv_file_feb("feb_offsets.csv");
-    csv_file_feb << "om,bin,mean,sigma,chi2ndf\n";
+    csv_file_feb << "om,bin,data_mean,fit_mean,sigma,chi2ndf\n";
 
     // Process FEB_ADC_VALUES for histogramming
     for (auto& om_pair : feb_adc_values) {
@@ -395,6 +422,7 @@ int main(){
         std::vector<double> fit_means_feb_om; // filled with 976 Gaussian means
         std::vector<double> fit_sigmas_feb_om; // filled with 976 Gaussian sigmas
         std::vector<double> fit_chi2_ndf_feb_om; // filled with 976 Gaussian chi2/ndf values
+        std::vector<double> data_means_feb_om; // filled with 976 data means
 
         for (int bin = 0; bin < 1024; ++bin){
             std::vector<float>& adc_values_bin = adc_bins[bin];
@@ -413,8 +441,8 @@ int main(){
             }
 
             // Calculate histogram range from valid ADC values only
-            float min_adc = *std::min_element(valid_adc_values.begin(), valid_adc_values.end()) - 5;
-            float max_adc = *std::max_element(valid_adc_values.begin(), valid_adc_values.end()) + 5;
+            float min_adc = *std::min_element(valid_adc_values.begin(), valid_adc_values.end()) - 2;
+            float max_adc = *std::max_element(valid_adc_values.begin(), valid_adc_values.end()) + 2;
             int nbins = static_cast<int>(std::ceil(max_adc - min_adc + 1));
 
             TString hist_name = Form("feb_om%d_bin%d", om_num, bin);
@@ -426,6 +454,11 @@ int main(){
                 hist->Fill(adc_value);
             }
 
+            // extract data mean
+            double data_mean = hist->GetMean();
+            data_means_feb_om.push_back(data_mean);
+
+            // Fit gaussian, extract mean/sigma
             TF1 *fit_func = new TF1("fit_func", "gaus", min_adc, max_adc);
             hist->Fit(fit_func, "Q", "", min_adc, max_adc);
 
@@ -433,7 +466,32 @@ int main(){
             double sigma = fit_func->GetParameter(2);
             double chi2 = fit_func->GetChisquare();
             int ndf = fit_func->GetNDF();
-            double chi2_ndf = (ndf != 0) ? chi2 / ndf : 0;
+            double chi2_ndf = -1;
+            if (ndf !=0){
+                chi2_ndf = chi2 / ndf;
+            } else {
+                std::cout << "[BAD FIT] ndf=0 for OM=" << om_num
+                        << " Bin=" << bin << std::endl;
+            }
+
+            if (chi2_ndf > 9) {
+                std::cout << "[WARNING] High chi2/ndf in FEB fit: "
+                        << "OM = " << om_num
+                        << ", Bin = " << bin
+                        << ", chi2/ndf = " << chi2_ndf << std::endl;
+
+                // Create canvas and draw histogram
+                TCanvas *c = new TCanvas("c", "High chi2/ndf Fit", 800, 600);
+                gStyle->SetOptStat(0);  // Disable stats box
+                hist->Draw();
+                fit_func->Draw("same");
+
+                // Save to PNG with unique name
+                TString filename = Form("feb_fit_om%d_bin%d_chi2%.2f.png", om_num, bin, chi2_ndf);
+                c->SaveAs(filename);
+
+                delete c;  // Clean up canvas
+            }
 
             fit_means_feb_om.push_back(mean);
             fit_sigmas_feb_om.push_back(sigma);
@@ -441,6 +499,7 @@ int main(){
 
             csv_file_feb << om_num << ","
                         << bin << ","
+                        << data_mean << ","
                         << mean << ","
                         << sigma << ","
                         << chi2_ndf << "\n";
@@ -462,9 +521,9 @@ int main(){
     }
     csv_file_feb.close();
 
-    //////////////////////////////////////////////////////////////////////////////////////
-    ////////////////////////////// Wavecater Calclulations ///////////////////////////////
-    //////////////////////////////////////////////////////////////////////////////////////
+    // //////////////////////////////////////////////////////////////////////////////////////
+    // ////////////////////////////// Wavecater Calclulations ///////////////////////////////
+    // //////////////////////////////////////////////////////////////////////////////////////
 
     // Process ADC_VALUES for histogramming, fitting and mod16 calculations
     for (auto& om_pair : adc_values) {
@@ -474,6 +533,7 @@ int main(){
         std::vector<double> fit_means_om; // filled with 976 Gaussian means
         std::vector<double> fit_sigmas_om; // filled with 976 Gaussian sigmas
         std::vector<double> fit_chi2_ndf_om; // filled with 976 Gaussian chi2/ndf values
+        std::vector<double> data_means_om; // filled with 976 data means
 
         for (int bin = 0; bin < 976; ++bin){
             std::vector<float>& adc_values_bin = adc_bins[bin];
@@ -482,8 +542,8 @@ int main(){
             TString hist_name = Form("om%d_bin%d", om_num, bin);
             TString hist_title = Form("OM %d - Bin %d;ADC Value;Counts", om_num, bin);
             // set histogram range based on the ADC values per om
-            float min_adc = *std::min_element(adc_values_bin.begin(), adc_values_bin.end())-5;
-            float max_adc = *std::max_element(adc_values_bin.begin(), adc_values_bin.end())+5;
+            float min_adc = *std::min_element(adc_values_bin.begin(), adc_values_bin.end())-2;
+            float max_adc = *std::max_element(adc_values_bin.begin(), adc_values_bin.end())+2;
             // Ensure bin count is an integer:
             int nbins = static_cast<int>(std::ceil(max_adc - min_adc + 1));
             // create histogram with nbins between min and max ADC values
@@ -491,6 +551,9 @@ int main(){
             for (float adc_value : adc_values_bin) {
                 hist->Fill(adc_value);
             }
+            // extract data mean
+            double data_mean = hist->GetMean();
+            data_means_om.push_back(data_mean);
 
             // Fit gaussian, extract mean/sigma
             TF1 *fit_func = new TF1("fit_func", "gaus", min_adc, max_adc);
@@ -499,7 +562,42 @@ int main(){
             double sigma = fit_func->GetParameter(2);
             double chi2 = fit_func->GetChisquare();
             int ndf = fit_func->GetNDF();
-            double chi2_ndf = chi2 / ndf;
+            double chi2_ndf = -1;
+            if (ndf !=0){
+                chi2_ndf = chi2 / ndf;
+            } else {
+                std::cout << "[BAD FIT] ndf=0 for OM=" << om_num
+                        << " Bin=" << bin << std::endl;
+            }
+            
+            ////////////////////////////////////////// Print interesting chi2 ////////////////////////////////////////////
+            static int saved_count = 0;
+            if (om_num == 652 && chi2_ndf > 9 && saved_count < 10) {
+                std::cout << "[WARNING] High chi2/ndf in FEB fit: "
+                        << "OM = " << om_num
+                        << ", Bin = " << bin
+                        << ", chi2/ndf = " << chi2_ndf << std::endl;
+
+                // Create canvas and draw histogram
+                TCanvas *c = new TCanvas("c", "High chi2/ndf Fit", 800, 600);
+                hist->Draw();
+                fit_func->Draw("same");
+
+                // Add chi2/ndf text label in top-right corner
+                TLatex latex;
+                latex.SetNDC(); // use normalized device coords (0–1)
+                latex.SetTextSize(0.04);
+                latex.DrawLatex(0.65, 0.85, Form("#chi^{2}/ndf = %.2f", chi2_ndf));
+
+                // Save to PNG with unique name
+                TString filename = Form("wcatch_fit_om%d_bin%d_chi2%.2f.png", om_num, bin, chi2_ndf);
+                c->SaveAs(filename);
+
+                delete c;  // Clean up canvas
+                saved_count++;
+            }
+            //////////////////////////////////////////////////////////////////////////////////////////////////////////////// 
+            
             fit_means_om.push_back(mean);
             fit_sigmas_om.push_back(sigma);
             fit_chi2_ndf_om.push_back(chi2_ndf);
@@ -512,6 +610,21 @@ int main(){
         // Calculate mod16 offsets for this OM
         Mod16Stats stats = compute_mod16_from_fits(fit_means_om, fit_sigmas_om, fit_chi2_ndf_om);
         mod16_offsets_per_om[om_num] = stats.offsets;
+
+        // calculate mod 16 data means for this OM
+        mod16_data_per_om[om_num] = std::vector<double>(16, 0.0);   
+        std::vector<int> counts(16, 0);
+        for (int i = 0; i < 976; ++i) {
+            int mod16_index = i % 16;
+            mod16_data_per_om[om_num][mod16_index] += data_means_om[i];
+            counts[mod16_index]++;
+        }
+        for (int i = 0; i < 16; ++i) {
+            if (counts[i] > 0) {
+                mod16_data_per_om[om_num][i] /= counts[i];
+            }
+        }
+
         // optionally store sigmas and chi2ndf too:
         mod16_sigmas_per_om[om_num] = stats.sigmas;
         mod16_chi2ndf_per_om[om_num] = stats.chi2ndfs;
@@ -520,7 +633,7 @@ int main(){
     std::ofstream csv_file("mod16_offsets.csv");
 
     // Write header
-    csv_file << "om,offset_index,offset_value,sigma_value,chi2ndf_value\n";
+    csv_file << "om,offset_index,data_mean,offset_value,sigma_value,chi2ndf_value\n";
 
     // Loop through the map and write data
     for (const auto& pair : mod16_offsets_per_om) {
@@ -529,6 +642,7 @@ int main(){
         for (int i = 0; i < (int)offsets.size(); ++i) {
             csv_file << om << ","
                  << i << ","
+                 << mod16_data_per_om[om][i] << ","
                  << mod16_offsets_per_om[om][i] << ","
                  << mod16_sigmas_per_om[om][i] << ","
                  << mod16_chi2ndf_per_om[om][i] << "\n";
@@ -536,7 +650,7 @@ int main(){
     }
 
     csv_file.close();
-    // fit_file->Close();
+     // fit_file->Close();
 
     //////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////  End spike offsets  /////////////////////////////////
@@ -578,7 +692,13 @@ int main(){
             double sigma = fit_func->GetParameter(2);
             double chi2 = fit_func->GetChisquare();
             int ndf = fit_func->GetNDF();
-            double chi2_ndf = (ndf > 0) ? chi2 / ndf : -1;
+            double chi2_ndf = -1;
+              if (ndf !=0){
+                chi2_ndf = chi2 / ndf;
+            } else {
+                std::cout << "[BAD FIT] ndf=0 for OM=" << om_num
+                        << " Bin=" << bin << std::endl;
+            }
 
             // Calculate difference: spike mean - mod16 offset for (bin % 16)
             int mod16_index = bin % 16;
@@ -642,73 +762,84 @@ int main(){
             baseline_orig = calculate_baseline976(wave->at(j));
             stddev_orig = calculate_stddev976(wave->at(j), baseline_orig);
             eom_orig = calculate_eom976(wave->at(j), baseline_orig);
+            end_baseline = calculate_baseline48(wave->at(j));
+            end_stddev = calculate_stddev48(wave->at(j), end_baseline);
+            end_eom = calculate_eom48(wave->at(j), end_baseline);
+
+            // ////////////////////////////////////// FOURIER NOTCH FILTERING ///////////////////////////////////////
+            // // Convert waveform to double precision for FFT input
+            // std::vector<double> waveform_double(1024);
+            // for (int bin = 0; bin < 1024; ++bin) {
+            //     waveform_double[bin] = static_cast<double>(wave->at(j)[bin]);
+            // }
+
+            // // Convert to double for FFT
+            // int N = 1024;
+            // double fs = 3.2e9;  // sampling freq Hz
+            // int n_freqs = N / 2 + 1;
             
-            ////////////////////////////////////// FOURIER NOTCH FILTERING ///////////////////////////////////////
-            // Convert waveform to double precision for FFT input
-            std::vector<double> waveform_double(1024);
-            for (int bin = 0; bin < 1024; ++bin) {
-                waveform_double[bin] = static_cast<double>(wave->at(j)[bin]);
-            }
-            
-            // Convert to double for FFT
-            int N = 1024;
-            double fs = 3.2e9;  // sampling freq Hz
-            int n_freqs = N / 2 + 1;
 
-            // FFT
-            TVirtualFFT::SetTransform(0);
-            TVirtualFFT* fft = TVirtualFFT::FFT(1, &N, "R2C EX K");
-            fft->SetPoints(&waveform_double[0]);
-            fft->Transform();
+            // // FFT
+            // TVirtualFFT::SetTransform(0);
+            // TVirtualFFT* fft = TVirtualFFT::FFT(1, &N, "R2C EX K");
+            // fft->SetPoints(&waveform_double[0]);
+            // fft->Transform();
 
-            std::vector<TComplex> freq_domain_before(n_freqs);
-            for (int k = 0; k < n_freqs; ++k) {
-                double re, im;
-                fft->GetPointComplex(k, re, im);
-                freq_domain_before[k] = TComplex(re, im);
-            }
+            // std::vector<TComplex> freq_domain_before(n_freqs);
+            // for (int k = 0; k < n_freqs; ++k) {
+            //     double re, im;
+            //     fft->GetPointComplex(k, re, im);
+            //     freq_domain_before[k] = TComplex(re, im);
+            // }
 
-            // Notch filter
-            std::vector<TComplex> freq_domain = freq_domain_before;
-            std::vector<double> notch_freqs = {132, 201, 401, 601, 801, 1001, 1201, 1401};
-            std::vector<int> notch_bins;
-            for (double f : notch_freqs) {
-                int bin = static_cast<int>(round(f * 1e6 * N / fs));
-                if (bin >= 0 && bin < n_freqs) notch_bins.push_back(bin);
-            }
-            for (int bin : notch_bins) {
-                freq_domain[bin] = TComplex(0.0, 0.0);
-                if (bin != 0 && bin != n_freqs - 1) {
-                    int sym_bin = N - bin;
-                    if (sym_bin < n_freqs) freq_domain[sym_bin] = TComplex(0.0, 0.0);
-                }
-            }
+            // // Notch filter with broadened bins (±1 bin)
+            // std::vector<TComplex> freq_domain = freq_domain_before;
+            // std::vector<double> notch_freqs = { 201, 601, 801, 1001, 1201, 1401};
+            // std::vector<int> notch_bins;
+            // for (double f : notch_freqs) {
+            //     int bin = static_cast<int>(round(f * 1e6 * N / fs));
+            //     if (bin >= 0 && bin < n_freqs) notch_bins.push_back(bin);
+            // }
 
-            // Inverse FFT
-            TVirtualFFT* ifft = TVirtualFFT::FFT(1, &N, "C2R EX K");
-            for (int k = 0; k < n_freqs; ++k) {
-                ifft->SetPointComplex(k, freq_domain[k]);
-            }
-            ifft->Transform();
+            // for (int bin : notch_bins) {
+            //     for (int b = bin - 0.5; b <= bin + 0.5; ++b) {
+            //         if (b >= 0 && b < n_freqs) {
+            //             freq_domain[b] = TComplex(0.0, 0.0);
+            //             // Zero symmetric bin for real FFT except DC and Nyquist
+            //             if (b != 0 && b != n_freqs - 1) {
+            //                 int sym_bin = N - b;
+            //                 if (sym_bin < n_freqs) freq_domain[sym_bin] = TComplex(0.0, 0.0);
+            //             }
+            //         }
+            //     }
+            // }
 
-            double* filtered = new double[N];
-            ifft->GetPoints(filtered);
+            // // Inverse FFT
+            // TVirtualFFT* ifft = TVirtualFFT::FFT(1, &N, "C2R EX K");
+            // for (int k = 0; k < n_freqs; ++k) {
+            //     ifft->SetPointComplex(k, freq_domain[k]);
+            // }
+            // ifft->Transform();
 
-            // Normalize filtered waveform
-            std::vector<double> filtered_wave(N);
-            for (int bin = 0; bin < N; ++bin) {
-                filtered_wave[bin] = filtered[bin] / N;
-            }
+            // double* filtered = new double[N];
+            // ifft->GetPoints(filtered);
 
-            delete[] filtered;
-            delete fft;
-            delete ifft;
+            // // Normalize filtered waveform
+            // std::vector<double> filtered_wave(N);
+            // for (int bin = 0; bin < N; ++bin) {
+            //     filtered_wave[bin] = filtered[bin] / N;
+            // }
 
+            // delete[] filtered;
+            // delete fft;
+            // delete ifft;
 
-            // Convert the filtered waveform back to short integers
-            for (int bin = 0; bin < 1024; ++bin) {
-                wave->at(j)[bin] = static_cast<short>(std::round(filtered_wave[bin]));
-            }
+            // // Convert the filtered waveform back to short integers
+            // for (int bin = 0; bin < 1024; ++bin) {
+            //     wave->at(j)[bin] = static_cast<short>(std::round(filtered_wave[bin]));
+            // }
+
+            //////////////////////////////////////////////////////////////////////////////////////////
 
             // only include waveforms where the eom is less than 0.076
             if (eom_orig > 0.076) continue;
@@ -731,14 +862,66 @@ int main(){
             // Step 3: invert reorder to get corrected waveform back in original order
             std::vector<short> corrected_wave = inverse_reorder_waveform(reordered_wave, fcr->at(j));
 
+            // Static counter to track saved FEB-corrected waveforms
+            static int saved_feb_waveforms = 0;
+
+            if (saved_feb_waveforms < 20) {
+                int n_bins = 976;
+
+                // Copy original waveform bins before correction
+                std::vector<double> original_waveform_bins(wave->at(j).begin(), wave->at(j).begin() + n_bins);
+
+                // Create canvas and divide into 2 pads (1 row, 2 columns)
+                TCanvas* c_feb = new TCanvas("c_feb", "FEB Correction Region", 1200, 400);
+                c_feb->Divide(2, 1);
+
+                // Left pad: original waveform (before correction)
+                c_feb->cd(1);
+                TGraph* g_before = new TGraph(n_bins);
+                for (int bin = 0; bin < n_bins; ++bin) {
+                    g_before->SetPoint(bin, bin, original_waveform_bins[bin]);
+                }
+                g_before->SetLineColor(kBlue);
+                g_before->SetMarkerSize(0.5);
+                g_before->SetTitle("Bins 0-975 Before FEB Correction;Bin;ADC Count");
+                g_before->Draw("APL");
+
+                // Right pad: corrected waveform
+                c_feb->cd(2);
+                TGraph* g_after = new TGraph(n_bins);
+                for (int bin = 0; bin < n_bins; ++bin) {
+                    g_after->SetPoint(bin, bin, corrected_wave[bin]);
+                }
+                g_after->SetLineColor(kRed);
+                g_after->SetMarkerSize(0.5);
+                g_after->SetTitle("Bins 0-975 After FEB Correction;Bin;ADC Count");
+                g_after->Draw("APL");
+
+                // Save plot as PNG, including event and waveform IDs
+                std::string filename = "waveform_feb_comparison_event" + std::to_string(i) + "_waveform" + std::to_string(j) + ".png";
+                c_feb->SaveAs(filename.c_str());
+
+                // Clean up
+                delete g_before;
+                delete g_after;
+                delete c_feb;
+
+                saved_feb_waveforms++;
+            }
+
+
             // Step 4: calculate baseline, stddev, and eom on corrected waveform in original order
             baseline_feb = calculate_baseline976(corrected_wave);
             stddev_feb   = calculate_stddev976(corrected_wave, baseline_feb);
             eom_feb      = calculate_eom976(corrected_wave, baseline_feb);
 
             // 976 waveform correction ///////////////////////////////////////////////////////////////
-            auto it = mod16_offsets_per_om.find(om_num);
 
+            // --- Save original waveform BEFORE applying correction ---
+            std::vector<double> original_waveform_bins(wave->at(j).begin(), wave->at(j).begin() + 976);
+
+            // --- Apply Mod16 correction ---
+            auto it = mod16_offsets_per_om.find(om_num);
             if (it != mod16_offsets_per_om.end()) {
                 const std::vector<double>& offsets = it->second;
 
@@ -750,59 +933,82 @@ int main(){
                 std::cerr << "Warning: No mod16 offsets found for OM " << om_num << std::endl;
             }
 
-            // Static counter to track saved mod16-corrected waveforms
+            // --- Plot before/after comparison ---
             static int saved_mod16_waveforms = 0;
 
             if (saved_mod16_waveforms < 20) {
                 int n_bins = 976;
 
-                // Create canvas
+                // Create canvas and divide into 2 pads (1 row, 2 columns)
                 TCanvas* c_mod16 = new TCanvas("c_mod16", "Mod16 Correction Region", 1200, 400);
+                c_mod16->Divide(2, 1);
 
-                // Create graph for mod16-corrected bins
-                TGraph* g_mod16 = new TGraph(n_bins);
+                // Draw original (before correction) graph on left pad
+                c_mod16->cd(1);
+                TGraph* g_before = new TGraph(n_bins);
                 for (int bin = 0; bin < n_bins; ++bin) {
-                    g_mod16->SetPoint(bin, bin, wave->at(j)[bin]);
+                    g_before->SetPoint(bin, bin, original_waveform_bins[bin]);
                 }
+                g_before->SetLineColor(kBlue);
+                g_before->SetMarkerSize(0.5);
+                g_before->SetTitle("Bins 0-975 Before Mod16 Correction;Bin;ADC Count");
+                g_before->Draw("APL");
 
-                g_mod16->SetTitle(Form("Mod16 Corrected Waveform Bins 0-975;Bin;ADC Count"));
-                g_mod16->SetMarkerStyle(0);
-                g_mod16->SetMarkerSize(1);
-                g_mod16->Draw("APL");
+                // Draw corrected waveform on right pad
+                c_mod16->cd(2);
+                TGraph* g_after = new TGraph(n_bins);
+                for (int bin = 0; bin < n_bins; ++bin) {
+                    g_after->SetPoint(bin, bin, wave->at(j)[bin]);
+                }
+                g_after->SetLineColor(kRed);
+                g_after->SetMarkerSize(0.5);
+                g_after->SetTitle("Bins 0-975 After Mod16 Correction;Bin;ADC Count");
+                g_after->Draw("APL");
 
-                // Save plot as PNG, include event and waveform numbers
-                std::string filename = "waveform_mod16_corrected_event" + std::to_string(i) + "_waveform" + std::to_string(j) + ".png";
+                // Save plot as PNG
+                std::string filename = "waveform_mod16_comparison_event" + std::to_string(i) + "_waveform" + std::to_string(j) + ".png";
                 c_mod16->SaveAs(filename.c_str());
 
                 // Clean up
-                delete g_mod16;
+                delete g_before;
+                delete g_after;
                 delete c_mod16;
 
-                saved_mod16_waveforms++;  // Increment count
+                saved_mod16_waveforms++;
             }
 
-
-            // Calculate adjusted baseline, stddev, and eom
+            // --- Calculate adjusted baseline, stddev, and eom ---
             baseline_976 = calculate_baseline976(wave->at(j));
             stddev_976 = calculate_stddev976(wave->at(j), baseline_976);
             eom_976 = calculate_eom976(wave->at(j), baseline_976);
+
          
             // Spike correction for bins 976–1023 /////////////////////////////////////////////////
+            static int saved_wave_snippets = 0;
+
+            int start_bin = 976;
+            int end_bin = 1023;
+            int n_bins = end_bin - start_bin + 1;
+
+            // Copy original bins BEFORE correction
+            std::vector<double> original_spike_bins(wave->at(j).begin() + start_bin, wave->at(j).begin() + end_bin + 1);
+
+            // Apply spike + mod16 correction
             auto it_spike = eow_offsets_per_om.find(om_num);
 
             if (it_spike != eow_offsets_per_om.end()) {
                 const std::vector<double>& spike_offsets = it_spike->second;
 
-                for (int bin = 976; bin <= 1023; ++bin) {
-                    int spike_bin_index = bin - 976;
+                for (int bin = start_bin; bin <= end_bin; ++bin) {
+                    int spike_bin_index = bin - start_bin;
                     if (spike_bin_index < (int)spike_offsets.size()) {
-                        wave->at(j)[bin] -= spike_offsets[spike_bin_index]; //remove eow spike to mod16 offset
+                        wave->at(j)[bin] -= spike_offsets[spike_bin_index]; // remove spike offset
 
                         // Apply mod16 offset to spike-corrected bin
                         auto it_mod16 = mod16_offsets_per_om.find(om_num);  
                         if (it_mod16 != mod16_offsets_per_om.end()) {
                             const std::vector<double>& offsets = it_mod16->second;
-                            wave->at(j)[bin] -= offsets[bin % 16];         // Apply mod16 offset
+                            wave->at(j)[bin] -= offsets[bin % 16]; // apply mod16 offset
                         }
                     }
                 }
@@ -810,247 +1016,121 @@ int main(){
                 std::cerr << "Warning: No spike offsets found for OM " << om_num << std::endl;
             }
 
-            // Static counter to track saved waveforms
-            static int saved_wave_snippets = 0;
-
+            // Plot comparison
             if (saved_wave_snippets < 20) {
-                // --- Plot and save corrected bins 976-1023 as PNG ---
-                int start_bin = 976;
-                int end_bin = 1023;
-                int n_bins = end_bin - start_bin + 1;
+                // Create canvas with 2 pads
+                TCanvas* c_spike = new TCanvas("c_spike", "Spike Region Correction", 1200, 400);
+                c_spike->Divide(2, 1);
 
-                // Create canvas
-                TCanvas* c_spike = new TCanvas("c_spike", "Spike Region Correction", 800, 400);
-
-                // Create graph for corrected bins
-                TGraph* g_spike = new TGraph(n_bins);
+                // Draw original (before correction)
+                c_spike->cd(1);
+                TGraph* g_before = new TGraph(n_bins);
                 for (int i = 0; i < n_bins; ++i) {
                     int bin = start_bin + i;
-                    g_spike->SetPoint(i, bin, wave->at(j)[bin]);
+                    g_before->SetPoint(i, bin, original_spike_bins[i]);
                 }
+                g_before->SetLineColor(kBlue);
+                g_before->SetMarkerSize(0.5);
+                g_before->SetTitle(Form("Bins %d-%d Before Spike Correction;Bin;ADC Count", start_bin, end_bin));
+                g_before->Draw("APL");
 
-                g_spike->SetTitle(Form("Corrected Waveform Bins %d-%d;Bin;ADC Count", start_bin, end_bin));
-                g_spike->SetMarkerStyle(0);
-                g_spike->SetMarkerSize(1);
-                g_spike->Draw("APL");
+                // Draw corrected (after correction)
+                c_spike->cd(2);
+                TGraph* g_after = new TGraph(n_bins);
+                for (int i = 0; i < n_bins; ++i) {
+                    int bin = start_bin + i;
+                    g_after->SetPoint(i, bin, wave->at(j)[bin]);
+                }
+                g_after->SetLineColor(kRed);
+                g_after->SetMarkerSize(0.5);
+                g_after->SetTitle(Form("Bins %d-%d After Spike Correction;Bin;ADC Count", start_bin, end_bin));
+                g_after->Draw("APL");
 
-                // Save plot as PNG, including event and waveform IDs for clarity
-                std::string filename = "waveform_spike_corrected_event" + std::to_string(i) + "_waveform" + std::to_string(j) + ".png";
+                // Save as PNG
+                std::string filename = "waveform_spike_comparison_event" + std::to_string(i) + "_waveform" + std::to_string(j) + ".png";
                 c_spike->SaveAs(filename.c_str());
 
                 // Clean up
-                delete g_spike;
+                delete g_before;
+                delete g_after;
                 delete c_spike;
 
-                saved_wave_snippets++;  // increment saved count
+                saved_wave_snippets++;
             }
 
-
-            // Recalculate baseline, stddev, and eom over the full waveform (if needed)
+            // Recalculate baseline, stddev, and eom
             baseline_end = calculate_baseline48(wave->at(j));
             stddev_end   = calculate_stddev48(wave->at(j), baseline_end);
             eom_end      = calculate_eom48(wave->at(j), baseline_end);
-
-            // storing quality of fit assurance data ////////////////////////////////////////////////////
-            // Clear previous event's data
-            mean_timeo.clear();
-            sigma_timeo.clear();
-            chi2ndf_timeo.clear();
-
-            auto it_offset = mod16_offsets_per_om.find(om_num);
-            auto it_sigma  = mod16_sigmas_per_om.find(om_num);
-            auto it_chi2   = mod16_chi2ndf_per_om.find(om_num);
-
-            if (it_offset != mod16_offsets_per_om.end() &&
-                it_sigma != mod16_sigmas_per_om.end() &&
-                it_chi2 != mod16_chi2ndf_per_om.end()) {
-
-                mean_timeo = it_offset->second;
-                sigma_timeo = it_sigma->second;
-                chi2ndf_timeo = it_chi2->second;
-
-            } else {
-                std::cerr << "Warning: Missing QA data for OM " << om_num << std::endl;
-
-                // Optionally fill with NaNs or -999 if QA data missing
-                mean_timeo.assign(16, -999);
-                sigma_timeo.assign(16, -999);
-                chi2ndf_timeo.assign(16, -999);
-            }
-
-            // feb QA ///////////////////////////////////////////////////////////////
-            mean_mem.clear();
-            sigma_mem.clear();
-            chi2ndf_mem.clear();
-
-            auto it_feb_offset = feb_offsets_per_om.find(om_num);
-            auto it_feb_sigma  = feb_sigmas_per_om.find(om_num);
-            auto it_feb_chi2   = feb_chi2ndf_per_om.find(om_num);
-
-            if (it_feb_offset != feb_offsets_per_om.end() &&
-                it_feb_sigma != feb_sigmas_per_om.end() &&
-                it_feb_chi2 != feb_chi2ndf_per_om.end()) {
-
-                mean_mem = it_feb_offset->second;
-                sigma_mem = it_feb_sigma->second;
-                chi2ndf_mem = it_feb_chi2->second;
-
-            } else {
-                std::cerr << "Warning: Missing FEB QA data for OM " << om_num << std::endl;
-
-                // Optionally fill with NaNs or -999 if QA data missing
-                mean_mem.assign(1024, -999);
-                sigma_mem.assign(1024, -999);
-                chi2ndf_mem.assign(1024, -999);
-
-            }
-            
             
             ////////////////////////// Fill the Baseline Tree ////////////////////////////
             baseline_tree->Fill();
         } 
     }
-    int max_visualizations = 20;
-    int visualized = 0;
+    
+    // storing quality of fit assurance data ////////////////////////////////////////////////////
+    for (int om_num = 0; om_num < 712; ++om_num) {
+        // Clear previous event's data
+        mean_timeo.clear();
+        sigma_timeo.clear();
+        chi2ndf_timeo.clear();
 
-    for (int i = 0; i < max_entries && visualized < max_visualizations; ++i) {
-        tree->GetEntry(i);
+        auto it_offset = mod16_offsets_per_om.find(om_num);
+        auto it_sigma  = mod16_sigmas_per_om.find(om_num);
+        auto it_chi2   = mod16_chi2ndf_per_om.find(om_num);
 
-        for (int j = 0; j < calo_nohits && visualized < max_visualizations; ++j) {
-            if (wave->at(j).size() < 1024) continue;
+        if (it_offset != mod16_offsets_per_om.end() &&
+            it_sigma != mod16_sigmas_per_om.end() &&
+            it_chi2 != mod16_chi2ndf_per_om.end()) {
 
-            // Copy original waveform
-            std::vector<short> original_wave = wave->at(j);
+            mean_timeo = it_offset->second;
+            sigma_timeo = it_sigma->second;
+            chi2ndf_timeo = it_chi2->second;
 
-            // Convert to double for FFT
-            int N = 1024;
-            double fs = 3.2e9;  // sampling freq Hz
-            int n_freqs = N / 2 + 1;
-            std::vector<double> waveform_double(N);
-            for (int bin = 0; bin < N; ++bin) {
-                waveform_double[bin] = static_cast<double>(original_wave[bin]);
-            }
+        } else {
+            std::cerr << "Warning: Missing QA data for OM " << om_num << std::endl;
 
-            // FFT
-            TVirtualFFT::SetTransform(0);
-            TVirtualFFT* fft = TVirtualFFT::FFT(1, &N, "R2C EX K");
-            fft->SetPoints(&waveform_double[0]);
-            fft->Transform();
-
-            std::vector<TComplex> freq_domain_before(n_freqs);
-            for (int k = 0; k < n_freqs; ++k) {
-                double re, im;
-                fft->GetPointComplex(k, re, im);
-                freq_domain_before[k] = TComplex(re, im);
-            }
-
-            // Notch filter
-            std::vector<TComplex> freq_domain = freq_domain_before;
-            std::vector<double> notch_freqs = {132, 201, 401, 601, 801, 1001, 1201, 1401};
-            std::vector<int> notch_bins;
-            for (double f : notch_freqs) {
-                int bin = static_cast<int>(round(f * 1e6 * N / fs));
-                if (bin >= 0 && bin < n_freqs) notch_bins.push_back(bin);
-            }
-            for (int bin : notch_bins) {
-                freq_domain[bin] = TComplex(0.0, 0.0);
-                if (bin != 0 && bin != n_freqs - 1) {
-                    int sym_bin = N - bin;
-                    if (sym_bin < n_freqs) freq_domain[sym_bin] = TComplex(0.0, 0.0);
-                }
-            }
-
-            // Inverse FFT
-            TVirtualFFT* ifft = TVirtualFFT::FFT(1, &N, "C2R EX K");
-            for (int k = 0; k < n_freqs; ++k) {
-                ifft->SetPointComplex(k, freq_domain[k]);
-            }
-            ifft->Transform();
-
-            double* filtered = new double[N];
-            ifft->GetPoints(filtered);
-
-            // Normalize filtered waveform
-            std::vector<double> filtered_wave(N);
-            for (int bin = 0; bin < N; ++bin) {
-                filtered_wave[bin] = filtered[bin] / N;
-            }
-
-            delete[] filtered;
-            delete fft;
-            delete ifft;
-
-            // Calculate FFT magnitudes for plotting
-            auto complexMagnitude = [](const TComplex& c) {
-                return std::sqrt(c.Re()*c.Re() + c.Im()*c.Im());
-            };
-            std::vector<double> fft_mag_before(n_freqs);
-            std::vector<double> fft_mag_after(n_freqs);
-            for (int k = 0; k < n_freqs; ++k) {
-                fft_mag_before[k] = complexMagnitude(freq_domain_before[k]);
-                fft_mag_after[k] = complexMagnitude(freq_domain[k]);
-            }
-
-            // Plotting
-            TCanvas* c = new TCanvas(Form("c_evt%d_wave%d", i, j), "Waveform and FFT", 1200, 900);
-            c->Divide(2, 2);
-
-            // Original waveform
-            c->cd(1);
-            TGraph* g_orig = new TGraph(N);
-            for (int bin = 0; bin < N; ++bin) g_orig->SetPoint(bin, bin, original_wave[bin]);
-            g_orig->SetTitle("Original Waveform;Bin;ADC");
-            // Remove marker style
-            g_orig->Draw("AL");  // Draw only axes and line (no points)
-
-            // FFT magnitude before filtering (log scale Y)
-            c->cd(2);
-            TGraph* g_fft_before = new TGraph(n_freqs);
-            for (int k = 0; k < n_freqs; ++k)
-                g_fft_before->SetPoint(k, k * fs / N / 1e6, fft_mag_before[k]);
-            g_fft_before->SetTitle("FFT Magnitude Before Notch Filter;Frequency (MHz);Magnitude");
-            gPad->SetLogy(1);  // Set log scale on Y axis
-            g_fft_before->Draw("AL");
-
-            // FFT magnitude after filtering (log scale Y)
-            c->cd(3);
-            TGraph* g_fft_after = new TGraph(n_freqs);
-            for (int k = 0; k < n_freqs; ++k)
-                g_fft_after->SetPoint(k, k * fs / N / 1e6, fft_mag_after[k]);
-            g_fft_after->SetTitle("FFT Magnitude After Notch Filter;Frequency (MHz);Magnitude");
-            gPad->SetLogy(1);  // Set log scale on Y axis
-            g_fft_after->Draw("AL");
-
-            // Filtered waveform
-            c->cd(4);
-            TGraph* g_filtered = new TGraph(N);
-            for (int bin = 0; bin < N; ++bin) g_filtered->SetPoint(bin, bin, filtered_wave[bin]);
-            g_filtered->SetTitle("Filtered Waveform;Bin;ADC");
-            // Remove marker style
-            g_filtered->Draw("AL");
-
-
-            // Save canvas to PNG
-            c->SaveAs(Form("visualization_event%d_waveform%d.png", i, j));
-
-            // Cleanup
-            delete g_orig;
-            delete g_fft_before;
-            delete g_fft_after;
-            delete g_filtered;
-            delete c;
-
-            visualized++;
+            // Optionally fill with NaNs or -999 if QA data missing
+            mean_timeo.assign(16, -999);
+            sigma_timeo.assign(16, -999);
+            chi2ndf_timeo.assign(16, -999);
         }
-    }
 
+        // feb QA ///////////////////////////////////////////////////////////////
+        mean_mem.clear();
+        sigma_mem.clear();
+        chi2ndf_mem.clear();
 
+        auto it_feb_offset = feb_offsets_per_om.find(om_num);
+        auto it_feb_sigma  = feb_sigmas_per_om.find(om_num);
+        auto it_feb_chi2   = feb_chi2ndf_per_om.find(om_num);
+
+        if (it_feb_offset != feb_offsets_per_om.end() &&
+            it_feb_sigma != feb_sigmas_per_om.end() &&
+            it_feb_chi2 != feb_chi2ndf_per_om.end()) {
+
+            mean_mem = it_feb_offset->second;
+            sigma_mem = it_feb_sigma->second;
+            chi2ndf_mem = it_feb_chi2->second;
+
+        } else {
+            std::cerr << "Warning: Missing FEB QA data for OM " << om_num << std::endl;
+
+            // Optionally fill with NaNs or -999 if QA data missing
+            mean_mem.assign(1024, -999);
+            sigma_mem.assign(1024, -999);
+            chi2ndf_mem.assign(1024, -999);
+
+        }
+        qaTree->Fill();
+    }   
     //////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////// End of code, writes and closes ////////////////////////////
     //////////////////////////////////////////////////////////////////////////////////////
     // write and close
     outfile->cd();
     baseline_tree->Write();
+    qaTree->Write();
     outfile->Close();
     file->Close();
 
