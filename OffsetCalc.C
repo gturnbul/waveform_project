@@ -295,6 +295,7 @@ int main(){
     double eom_fft = 0;
 
     //Quality assurance variables
+    int qa_om_num = -1;
     std::vector<double> mean_mem;
     std::vector<double> sigma_mem;
     std::vector<double> chi2ndf_mem; 
@@ -329,7 +330,7 @@ int main(){
     baseline_tree->Branch("stddev_fft", &stddev_fft, "stddev_fft/D");
     baseline_tree->Branch("eom_fft", &eom_fft, "eom_fft/D");
 
-    qaTree->Branch("om_num", &om_num, "om_num/I");
+    qaTree->Branch("om_num", &qa_om_num, "om_num/I");
     qaTree->Branch("mean_mem", &mean_mem);
     qaTree->Branch("sigma_mem", &sigma_mem);
     qaTree->Branch("chi2ndf_mem", &chi2ndf_mem);    
@@ -1069,15 +1070,16 @@ int main(){
     }
     
     // storing quality of fit assurance data ////////////////////////////////////////////////////
-    for (int om_num = 0; om_num < 712; ++om_num) {
+    for (int omnum = 0; omnum < 712; ++omnum) {
+        qa_om_num = omnum;
         // Clear previous event's data
         mean_timeo.clear();
         sigma_timeo.clear();
         chi2ndf_timeo.clear();
 
-        auto it_offset = mod16_offsets_per_om.find(om_num);
-        auto it_sigma  = mod16_sigmas_per_om.find(om_num);
-        auto it_chi2   = mod16_chi2ndf_per_om.find(om_num);
+        auto it_offset = mod16_offsets_per_om.find(omnum);
+        auto it_sigma  = mod16_sigmas_per_om.find(omnum);
+        auto it_chi2   = mod16_chi2ndf_per_om.find(omnum);
 
         if (it_offset != mod16_offsets_per_om.end() &&
             it_sigma != mod16_sigmas_per_om.end() &&
@@ -1101,9 +1103,9 @@ int main(){
         sigma_mem.clear();
         chi2ndf_mem.clear();
 
-        auto it_feb_offset = feb_offsets_per_om.find(om_num);
-        auto it_feb_sigma  = feb_sigmas_per_om.find(om_num);
-        auto it_feb_chi2   = feb_chi2ndf_per_om.find(om_num);
+        auto it_feb_offset = feb_offsets_per_om.find(omnum);
+        auto it_feb_sigma  = feb_sigmas_per_om.find(omnum);
+        auto it_feb_chi2   = feb_chi2ndf_per_om.find(omnum);
 
         if (it_feb_offset != feb_offsets_per_om.end() &&
             it_feb_sigma != feb_sigmas_per_om.end() &&
@@ -1114,7 +1116,7 @@ int main(){
             chi2ndf_mem = it_feb_chi2->second;
 
         } else {
-            std::cerr << "Warning: Missing FEB QA data for OM " << om_num << std::endl;
+            std::cerr << "Warning: Missing FEB QA data for OM " << omnum << std::endl;
 
             // Optionally fill with NaNs or -999 if QA data missing
             mean_mem.assign(1024, -999);
